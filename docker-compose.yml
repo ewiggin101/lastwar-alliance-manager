@@ -2,7 +2,7 @@
 # For local development against your own build, use docker-compose.dev.yml.
 services:
   lastwar:
-    image: ghcr.io/vervelak/lastwar-alliance-manager:latest
+    image: ghcr.io/ewiggin101/lastwar-alliance-manager:latest
     container_name: lastwar-alliance
     ports:
       - "8080:8080"
