@@ -48,10 +48,19 @@ type Member struct {
 	Nickname       *string `json:"nickname,omitempty"`
 	Rank           string  `json:"rank"`
 	Eligible       bool    `json:"eligible"`
+	MeritEligible  bool    `json:"merit_eligible"`
 	Power          *int64  `json:"power,omitempty"`
 	DeletedAt      *string `json:"deleted_at,omitempty"`
 	DeletionReason *string `json:"deletion_reason,omitempty"`
 	DeletedBy      *string `json:"deleted_by,omitempty"`
+}
+
+type MemberInput struct {
+	Name          string  `json:"name"`
+	Nickname      *string `json:"nickname"`
+	Rank          string  `json:"rank"`
+	Eligible      *bool   `json:"eligible"`
+	MeritEligible *bool   `json:"merit_eligible"`
 }
 
 type MemberStats struct {
@@ -1020,7 +1029,8 @@ func initDB() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
 		rank TEXT NOT NULL,
-		eligible BOOLEAN NOT NULL DEFAULT 1
+		eligible BOOLEAN NOT NULL DEFAULT 1,
+		merit_eligible BOOLEAN NOT NULL DEFAULT 0
 	);`
 
 	_, err = db.Exec(createMembersTableSQL)
@@ -1045,6 +1055,25 @@ func initDB() error {
 			return err
 		}
 		log.Println("Database migration: Added eligible column to members table")
+	}
+
+	// Migrate existing members table to add merit_eligible column if missing
+	var meritEligibleColumnExists bool
+	err = db.QueryRow(`
+		SELECT COUNT(*) > 0
+		FROM pragma_table_info('members')
+		WHERE name = 'merit_eligible'
+	`).Scan(&meritEligibleColumnExists)
+	if err != nil {
+		return err
+	}
+
+	if !meritEligibleColumnExists {
+		_, err = db.Exec(`ALTER TABLE members ADD COLUMN merit_eligible BOOLEAN NOT NULL DEFAULT 0`)
+		if err != nil {
+			return err
+		}
+		log.Println("Database migration: Added merit_eligible column to members table")
 	}
 
 	// Migrate members table to add nickname column if missing
@@ -2887,7 +2916,7 @@ func getLoginHistory(w http.ResponseWriter, r *http.Request) {
 // Get all members
 func getMembers(w http.ResponseWriter, r *http.Request) {
 	query := `
-		SELECT m.id, m.name, m.nickname, m.rank, COALESCE(m.eligible, 1),
+		SELECT m.id, m.name, m.nickname, m.rank, COALESCE(m.eligible, 1), COALESCE(m.merit_eligible, 0),
 		       (SELECT ph.power 
 		        FROM power_history ph 
 		        WHERE ph.member_id = m.id 
@@ -2908,7 +2937,7 @@ func getMembers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var m Member
 		var nickname sql.NullString
-		if err := rows.Scan(&m.ID, &m.Name, &nickname, &m.Rank, &m.Eligible, &m.Power); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &nickname, &m.Rank, &m.Eligible, &m.MeritEligible, &m.Power); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -2965,36 +2994,49 @@ func getMemberStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+
 // Create a new member
 func createMember(w http.ResponseWriter, r *http.Request) {
-	var m Member
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+	var input MemberInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Default to eligible if not specified
-	if !m.Eligible {
-		m.Eligible = true
+	eligible := true
+	if input.Eligible != nil {
+		eligible = *input.Eligible
+	}
+
+	meritEligible := false
+	if input.MeritEligible != nil {
+		meritEligible = *input.MeritEligible
 	}
 
 	var nicknameVal interface{}
-	if m.Nickname != nil && *m.Nickname != "" {
-		nicknameVal = *m.Nickname
+	if input.Nickname != nil && *input.Nickname != "" {
+		nicknameVal = *input.Nickname
 	}
 
-	result, err := db.Exec("INSERT INTO members (name, nickname, rank, eligible) VALUES (?, ?, ?, ?)", m.Name, nicknameVal, m.Rank, m.Eligible)
+	result, err := db.Exec("INSERT INTO members (name, nickname, rank, eligible, merit_eligible) VALUES (?, ?, ?, ?, ?)", input.Name, nicknameVal, input.Rank, eligible, meritEligible)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	id, _ := result.LastInsertId()
-	m.ID = int(id)
+	member := Member{
+		ID:            int(id),
+		Name:          input.Name,
+		Nickname:      input.Nickname,
+		Rank:          input.Rank,
+		Eligible:      eligible,
+		MeritEligible: meritEligible,
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(m)
+	json.NewEncoder(w).Encode(member)
 }
 
 // Update a member
@@ -3006,28 +3048,84 @@ func updateMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var m Member
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+	var input MemberInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	var nicknameVal interface{}
-	if m.Nickname != nil && *m.Nickname != "" {
-		nicknameVal = *m.Nickname
+	var current Member
+	var currentNickname sql.NullString
+	if err := db.QueryRow(`
+		SELECT name, nickname, rank, COALESCE(eligible, 1), COALESCE(merit_eligible, 0)
+		FROM members
+		WHERE id = ? AND deleted_at IS NULL
+	`, id).Scan(&current.Name, &currentNickname, &current.Rank, &current.Eligible, &current.MeritEligible); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Member not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if currentNickname.Valid && currentNickname.String != "" {
+		current.Nickname = &currentNickname.String
 	}
 
-	_, err = db.Exec("UPDATE members SET name = ?, nickname = ?, rank = ?, eligible = ? WHERE id = ?", m.Name, nicknameVal, m.Rank, m.Eligible, id)
+	name := current.Name
+	if input.Name != "" {
+		name = input.Name
+	}
+
+	rank := current.Rank
+	if input.Rank != "" {
+		rank = input.Rank
+	}
+
+	eligible := current.Eligible
+	if input.Eligible != nil {
+		eligible = *input.Eligible
+	}
+
+	meritEligible := current.MeritEligible
+	if input.MeritEligible != nil {
+		meritEligible = *input.MeritEligible
+	}
+
+	var nicknameVal interface{}
+	if input.Nickname != nil {
+		if *input.Nickname != "" {
+			nicknameVal = *input.Nickname
+		}
+	} else if current.Nickname != nil && *current.Nickname != "" {
+		nicknameVal = *current.Nickname
+	}
+
+	_, err = db.Exec("UPDATE members SET name = ?, nickname = ?, rank = ?, eligible = ?, merit_eligible = ? WHERE id = ?", name, nicknameVal, rank, eligible, meritEligible, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	m.ID = id
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(m)
-}
+	member := Member{
+		ID:            id,
+		Name:          name,
+		Nickname:      current.Nickname,
+		Rank:          rank,
+		Eligible:      eligible,
+		MeritEligible: meritEligible,
+	}
+	if input.Nickname != nil {
+		if *input.Nickname != "" {
+			member.Nickname = input.Nickname
+		} else {
+			member.Nickname = nil
+		}
+	}
 
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(member)
+}
 // Delete a member
 func deleteMember(w http.ResponseWriter, r *http.Request) {
 	session, _ := store.Get(r, "session")

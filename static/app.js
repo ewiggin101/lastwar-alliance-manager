@@ -122,6 +122,7 @@ function resetMemberForm() {
     editingMemberId = null;
     document.getElementById('member-form').reset();
     document.getElementById('member-eligible').checked = true;
+    document.getElementById('member-merit-eligible').checked = false;
     document.getElementById('member-nickname').value = '';
     document.getElementById('modal-form-title').textContent = 'Add New Member';
     document.getElementById('submit-btn').textContent = 'Add Member';
@@ -177,6 +178,7 @@ async function loadMembers() {
     }
 }
 
+
 // Display members in the list
 function displayMembers(members) {
     const membersList = document.getElementById('members-list');
@@ -189,6 +191,8 @@ function displayMembers(members) {
     membersList.innerHTML = members.map(member => {
         const eligibleStatus = member.eligible !== false ? '✓ Eligible' : '✗ Not Eligible';
         const eligibleClass = member.eligible !== false ? 'eligible' : 'not-eligible';
+        const meritStatus = member.merit_eligible === true ? '✓ Merit THP' : '✗ Not Merit';
+        const meritClass = member.merit_eligible === true ? 'merit' : 'not-merit';
         
         // Format power display
         let powerDisplay = '';
@@ -201,6 +205,7 @@ function displayMembers(members) {
             actionsHtml = `
                 <div class="member-actions">
                     <button class="toggle-eligible-btn ${eligibleClass}" onclick="toggleEligible(${member.id}, ${member.eligible !== false})" title="${eligibleStatus}">${eligibleStatus}</button>
+                    <button class="toggle-merit-btn ${meritClass}" onclick="toggleMerit(${member.id}, ${member.merit_eligible === true})" title="${meritStatus}">${meritStatus}</button>
                     <div class="member-overflow">
                         <button class="overflow-btn" onclick="this.parentElement.classList.toggle('open')" title="More actions">⋯</button>
                         <div class="overflow-menu">
@@ -223,13 +228,13 @@ function displayMembers(members) {
                     <span class="member-rank rank-${member.rank.replace(/\s+/g, '-')}">${escapeHtml(member.rank)}</span>
                     ${powerDisplay}
                     <span class="member-eligible ${eligibleClass}">${eligibleStatus}</span>
+                    <span class="member-merit ${meritClass}">${meritStatus}</span>
                 </div>
                 ${actionsHtml}
             </div>
         `;
     }).join('');
 }
-
 // Format power value with K/M/B suffixes
 function formatPower(power) {
     if (!power) return '';
@@ -266,6 +271,7 @@ document.getElementById('member-form').addEventListener('submit', async (e) => {
     const nickname = document.getElementById('member-nickname').value.trim() || null;
     const rank = document.getElementById('member-rank').value;
     const eligible = document.getElementById('member-eligible').checked;
+    const meritEligible = document.getElementById('member-merit-eligible').checked;
     
     // Inline validation
     let valid = true;
@@ -286,7 +292,7 @@ document.getElementById('member-form').addEventListener('submit', async (e) => {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ name, nickname, rank, eligible }),
+                body: JSON.stringify({ name, nickname, rank, eligible, merit_eligible: meritEligible }),
             });
 
             if (!response.ok) throw new Error('Failed to update member');
@@ -299,7 +305,7 @@ document.getElementById('member-form').addEventListener('submit', async (e) => {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ name, nickname, rank, eligible }),
+                body: JSON.stringify({ name, nickname, rank, eligible, merit_eligible: meritEligible }),
             });
 
             if (!response.ok) {
@@ -336,6 +342,7 @@ function editMember(id) {
     document.getElementById('member-nickname').value = member.nickname || '';
     document.getElementById('member-rank').value = member.rank;
     document.getElementById('member-eligible').checked = member.eligible !== false;
+    document.getElementById('member-merit-eligible').checked = member.merit_eligible === true;
     document.getElementById('modal-form-title').textContent = 'Edit Member';
     document.getElementById('submit-btn').textContent = 'Update Member';
     
@@ -894,5 +901,54 @@ async function toggleEligible(id, currentStatus) {
     } catch (error) {
         console.error('Error toggling eligibility:', error);
         showToast('Failed to update member eligibility: ' + error.message, 'error');
+    }
+}
+
+// Toggle merit pool membership for THP
+async function toggleMerit(id, currentStatus) {
+    if (!canManageRanks) {
+        showToast('You do not have permission to manage members. Only R4 and R5 can do this.', 'warning');
+        return;
+    }
+
+    const newStatus = !currentStatus;
+    const statusText = newStatus ? 'included in' : 'removed from';
+
+    const confirmed = await showConfirm(
+        `Mark this member as ${statusText} the THP merit pool?`,
+        'Update Merit Pool',
+        'Confirm',
+        'Cancel',
+        false
+    );
+    if (!confirmed) return;
+
+    try {
+        const response = await fetch(`${API_URL}`);
+        if (!response.ok) throw new Error('Failed to fetch members');
+
+        const members = await response.json();
+        const member = members.find(m => m.id === id);
+
+        if (!member) throw new Error('Member not found');
+
+        const updateResponse = await fetch(`${API_URL}/${id}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                name: member.name,
+                rank: member.rank,
+                merit_eligible: newStatus
+            }),
+        });
+
+        if (!updateResponse.ok) throw new Error('Failed to update member');
+
+        loadMembers();
+    } catch (error) {
+        console.error('Error toggling merit pool:', error);
+        showToast('Failed to update merit pool membership: ' + error.message, 'error');
     }
 }

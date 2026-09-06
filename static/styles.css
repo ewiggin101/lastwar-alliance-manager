@@ -1345,7 +1345,8 @@ button {
     color: white;
 }
 
-.member-eligible {
+.member-eligible,
+.member-merit {
     display: inline-block;
     padding: 4px 12px;
     border-radius: 15px;
@@ -1354,14 +1355,25 @@ button {
     margin-left: 8px;
 }
 
+
 .member-eligible.eligible {
     background: var(--bs-success-bg);
     color: var(--bs-success-text);
 }
 
+.member-merit.merit {
+    background: var(--warning-light);
+    color: var(--warning-dark);
+}
+
 .member-eligible.not-eligible {
     background: var(--danger-light);
     color: var(--danger-dark);
+}
+
+.member-merit.not-merit {
+    background: var(--info-light);
+    color: var(--info-dark);
 }
 
 .member-actions {
@@ -1373,7 +1385,8 @@ button {
 .edit-btn,
 .delete-btn,
 .create-user-btn,
-.toggle-eligible-btn {
+.toggle-eligible-btn,
+.toggle-merit-btn {
     padding: 8px 16px;
     font-size: 14px;
     border-radius: 6px;
@@ -1415,7 +1428,8 @@ button {
     transform: translateY(-2px);
 }
 
-.toggle-eligible-btn {
+.toggle-eligible-btn,
+.toggle-merit-btn {
     font-size: 12px;
     padding: 4px 10px;
     border-radius: 12px;
@@ -1438,6 +1452,26 @@ button {
 .toggle-eligible-btn.not-eligible {
     background: var(--danger-light, rgba(239, 68, 68, 0.15));
     color: var(--danger-dark, #dc2626);
+}
+
+.toggle-merit-btn.merit {
+    background: var(--warning-light, rgba(245, 158, 11, 0.15));
+    color: var(--warning-dark, #d97706);
+}
+
+.toggle-merit-btn.merit:hover {
+    background: var(--warning, #f59e0b);
+    color: white;
+}
+
+.toggle-merit-btn.not-merit {
+    background: var(--info-light, rgba(59, 130, 246, 0.15));
+    color: var(--info-dark, #1d4ed8);
+}
+
+.toggle-merit-btn.not-merit:hover {
+    background: var(--info, #3b82f6);
+    color: white;
 }
 
 .toggle-eligible-btn.not-eligible:hover {
