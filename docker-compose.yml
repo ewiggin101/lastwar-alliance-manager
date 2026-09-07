@@ -5,7 +5,7 @@ services:
     image: ghcr.io/ewiggin101/lastwar-alliance-manager:latest
     container_name: lastwar-alliance
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       # Persist the SQLite database in a local ./data folder
       - ./data:/data
