@@ -68,3 +68,6 @@ ocr_test/
 *.jpeg
 *.gif
 *.webp
+
+# Reference OCR sample screenshots are tracked on purpose
+!reference/ocr-samples/**
