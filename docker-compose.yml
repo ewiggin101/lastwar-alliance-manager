@@ -22,3 +22,20 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # Public HTTPS entry point. Bind only the Oracle private interface so the
+  # existing WireGuard-only status page can keep ports 80 and 443.
+  web:
+    image: caddy:2-alpine
+    container_name: lastwar-alliance-web
+    ports:
+      - "10.0.1.148:80:80"
+      - "10.0.1.148:443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+    depends_on:
+      lastwar:
+        condition: service_healthy
+    restart: unless-stopped

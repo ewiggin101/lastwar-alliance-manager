@@ -66,6 +66,17 @@ The database is persisted in `./data/alliance.db` on the host.
 
 ### 5. Set Up a Reverse Proxy with HTTPS
 
+The production Compose file already includes Caddy for the Oracle deployment.
+It serves `https://oracle.dmyoung.net` and keeps the application bound to
+localhost. Make sure the hostname points to the server's public IP and that
+the Oracle security list/NSG allows inbound TCP ports 80 and 443, then run:
+
+```bash
+docker compose up -d
+```
+
+Caddy will obtain and renew the HTTPS certificate automatically.
+
 #### Option A: Caddy (Automatic HTTPS — Recommended)
 
 ```bash
