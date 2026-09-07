@@ -1,4 +1,4 @@
-oracle.dmyoung.net {
+puc.lw-421.com {
     reverse_proxy lastwar:8080
 
     encode zstd gzip
