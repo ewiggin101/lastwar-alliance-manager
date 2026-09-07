@@ -62,6 +62,10 @@ function canEditSchedule() {
     return isAdmin || currentUserRank === 'R4' || currentUserRank === 'R5';
 }
 
+function isMeritMember(member) {
+    return member.merit_eligible === true || member.merit_eligible === 1 || member.merit_eligible === '1';
+}
+
 // Setup event listeners after auth check
 async function setupEventListeners() {
     const usernameDisplay = document.getElementById('username-display');
@@ -363,13 +367,48 @@ async function loadMembers() {
         allMembers = await response.json();
         // Sort members case-insensitively by name
         allMembers.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-        backupMembers = allMembers.filter(m => m.rank === 'R4' || m.rank === 'R5');
+        backupMembers = allMembers.filter(m =>
+            (m.rank === 'R4' || m.rank === 'R5') && !isMeritMember(m)
+        );
+        renderMeritPool();
         
         // Load member statistics
         await loadMemberStats();
     } catch (error) {
         console.error('Error loading members:', error);
     }
+}
+
+function renderMeritPool() {
+    const list = document.getElementById('merit-pool-list');
+    const count = document.getElementById('merit-pool-count');
+    if (!list || !count) return;
+
+    const meritMembers = allMembers
+        .filter(isMeritMember)
+        .sort((a, b) => (Number(b.power) || 0) - (Number(a.power) || 0) || a.name.localeCompare(b.name));
+
+    count.textContent = `${meritMembers.length}/12 selected`;
+
+    if (meritMembers.length === 0) {
+        list.innerHTML = '<p class="empty">No members are in the merit pool. Mark members as Merit THP on the Members page.</p>';
+        return;
+    }
+
+    list.innerHTML = meritMembers.map((member, index) => {
+        const power = Number(member.power) || 0;
+        const powerText = power > 0 ? `${power.toLocaleString()} THP` : 'THP not recorded';
+        return `
+            <div class="merit-pool-member">
+                <span class="merit-pool-position">${index + 1}</span>
+                <div class="merit-pool-member-info">
+                    <strong>${nameNick(member.name, member.nickname)}</strong>
+                    <span class="merit-pool-rank">${escapeHtml(member.rank)}</span>
+                </div>
+                <span class="merit-pool-power">${powerText}</span>
+            </div>
+        `;
+    }).join('');
 }
 
 // Load member statistics
@@ -671,6 +710,7 @@ function populateConductorSelect(members, schedule) {
         
         // Build option text with stats
         let optionText = `${member.name}${member.nickname ? ' [' + member.nickname + ']' : ''} (${member.rank})`;
+        if (isMeritMember(member)) optionText += ' - Merit THP';
         const stats = memberStats[member.id];
         if (stats) {
             const statsInfo = [];
@@ -709,8 +749,14 @@ function populateConductorSelect(members, schedule) {
 function populateBackupSelect(members, schedule) {
     const backupSelect = document.getElementById('backup-select');
     backupSelect.innerHTML = '';
+
+    // Keep an existing merit assignment editable, but do not offer merit members for new R4 backup assignments.
+    const currentBackup = schedule && allMembers.find(member => member.id === schedule.backup_id);
+    const selectableMembers = currentBackup && isMeritMember(currentBackup)
+        ? [...members, currentBackup]
+        : members;
     
-    members.forEach(member => {
+    selectableMembers.forEach(member => {
         const option = document.createElement('option');
         option.value = member.id;
         
@@ -720,6 +766,7 @@ function populateBackupSelect(members, schedule) {
         if (stats && stats.backup_used_count > 0) {
             optionText += ` (used as backup ${stats.backup_used_count}x)`;
         }
+        if (isMeritMember(member)) optionText += ' (Merit THP - existing)';
         
         option.textContent = optionText;
         option.dataset.name = (member.name + (member.nickname ? ' ' + member.nickname : '')).toLowerCase();
@@ -736,7 +783,7 @@ function applyVipSeatVisibility() {
     if (drawVipBtn) drawVipBtn.style.display = vipSeatEnabled ? '' : 'none';
 }
 
-// Populate VIP select (any member, optional)
+// Populate VIP select (merit members stay out of the flex/VIP lane)
 function populateVipSelect(members, schedule) {
     // Hide/show the VIP form group based on setting
     const vipFormGroup = document.getElementById('vip-search') && document.getElementById('vip-search').closest('.form-group');
@@ -746,10 +793,17 @@ function populateVipSelect(members, schedule) {
     const vipSelect = document.getElementById('vip-select');
     vipSelect.innerHTML = '<option value="">— No VIP assigned —</option>';
 
-    members.forEach(member => {
+    const currentVip = schedule && allMembers.find(member => member.id === schedule.vip_id);
+    const selectableMembers = members.filter(member =>
+        !isMeritMember(member) || (currentVip && member.id === currentVip.id)
+    );
+
+    selectableMembers.forEach(member => {
         const option = document.createElement('option');
         option.value = member.id;
-        option.textContent = `${member.name}${member.nickname ? ' [' + member.nickname + ']' : ''} (${member.rank})`;
+        let optionText = `${member.name}${member.nickname ? ' [' + member.nickname + ']' : ''} (${member.rank})`;
+        if (isMeritMember(member)) optionText += ' (Merit THP - existing)';
+        option.textContent = optionText;
         option.dataset.name = (member.name + (member.nickname ? ' ' + member.nickname : '')).toLowerCase();
         if (schedule && schedule.vip_id && member.id === schedule.vip_id) {
             option.selected = true;

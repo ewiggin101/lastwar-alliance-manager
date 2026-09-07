@@ -191,8 +191,8 @@ function displayMembers(members) {
     membersList.innerHTML = members.map(member => {
         const eligibleStatus = member.eligible !== false ? '✓ Eligible' : '✗ Not Eligible';
         const eligibleClass = member.eligible !== false ? 'eligible' : 'not-eligible';
-        const meritStatus = member.merit_eligible === true ? '✓ Merit THP' : '✗ Not Merit';
-        const meritClass = member.merit_eligible === true ? 'merit' : 'not-merit';
+        const meritStatus = isMeritEligible(member) ? '✓ Merit THP' : '✗ Not Merit';
+        const meritClass = isMeritEligible(member) ? 'merit' : 'not-merit';
         
         // Format power display
         let powerDisplay = '';
@@ -205,7 +205,7 @@ function displayMembers(members) {
             actionsHtml = `
                 <div class="member-actions">
                     <button class="toggle-eligible-btn ${eligibleClass}" onclick="toggleEligible(${member.id}, ${member.eligible !== false})" title="${eligibleStatus}">${eligibleStatus}</button>
-                    <button class="toggle-merit-btn ${meritClass}" onclick="toggleMerit(${member.id}, ${member.merit_eligible === true})" title="${meritStatus}">${meritStatus}</button>
+                    <button class="toggle-merit-btn ${meritClass}" onclick="toggleMerit(${member.id}, ${isMeritEligible(member)})" title="${meritStatus}">${meritStatus}</button>
                     <div class="member-overflow">
                         <button class="overflow-btn" onclick="this.parentElement.classList.toggle('open')" title="More actions">⋯</button>
                         <div class="overflow-menu">
@@ -256,6 +256,10 @@ function updateMemberCount(count) {
     if (heading) {
         heading.textContent = `Alliance Members (${count})`;
     }
+}
+
+function isMeritEligible(member) {
+    return member.merit_eligible === true || member.merit_eligible === 1 || member.merit_eligible === '1';
 }
 
 // Handle form submission
@@ -342,7 +346,7 @@ function editMember(id) {
     document.getElementById('member-nickname').value = member.nickname || '';
     document.getElementById('member-rank').value = member.rank;
     document.getElementById('member-eligible').checked = member.eligible !== false;
-    document.getElementById('member-merit-eligible').checked = member.merit_eligible === true;
+    document.getElementById('member-merit-eligible').checked = isMeritEligible(member);
     document.getElementById('modal-form-title').textContent = 'Edit Member';
     document.getElementById('submit-btn').textContent = 'Update Member';
     

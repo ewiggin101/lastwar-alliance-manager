@@ -3444,7 +3444,8 @@ func createTrainSchedule(w http.ResponseWriter, r *http.Request) {
 
 	// Validate backup is R4 or R5
 	var backupRank string
-	err := db.QueryRow("SELECT rank FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank)
+	var backupMeritEligible bool
+	err := db.QueryRow("SELECT rank, COALESCE(merit_eligible, 0) FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank, &backupMeritEligible)
 	if err != nil {
 		http.Error(w, "Backup member not found", http.StatusBadRequest)
 		return
@@ -3452,6 +3453,10 @@ func createTrainSchedule(w http.ResponseWriter, r *http.Request) {
 
 	if backupRank != "R4" && backupRank != "R5" {
 		http.Error(w, "Backup must be an R4 or R5 member", http.StatusBadRequest)
+		return
+	}
+	if backupMeritEligible {
+		http.Error(w, "Merit THP members cannot be assigned as R4 backups", http.StatusBadRequest)
 		return
 	}
 
@@ -3464,8 +3469,16 @@ func createTrainSchedule(w http.ResponseWriter, r *http.Request) {
 	var vipIDVal interface{}
 	var vipSnapshot string
 	if ts.VipID != nil && *ts.VipID > 0 {
+		var vipMeritEligible bool
 		vipIDVal = *ts.VipID
-		db.QueryRow("SELECT name FROM members WHERE id = ?", *ts.VipID).Scan(&vipSnapshot)
+		if err := db.QueryRow("SELECT name, COALESCE(merit_eligible, 0) FROM members WHERE id = ?", *ts.VipID).Scan(&vipSnapshot, &vipMeritEligible); err != nil {
+			http.Error(w, "VIP member not found", http.StatusBadRequest)
+			return
+		}
+		if vipMeritEligible {
+			http.Error(w, "Merit THP members cannot be assigned to the VIP/flex slot", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Use INSERT OR REPLACE to allow updating schedules created by auto-schedule
@@ -3505,7 +3518,8 @@ func updateTrainSchedule(w http.ResponseWriter, r *http.Request) {
 	// Get existing schedule to check if conductor or backup changed
 	var existingConductorID int
 	var existingBackupID sql.NullInt64
-	err = db.QueryRow("SELECT conductor_id, backup_id FROM train_schedules WHERE id = ?", id).Scan(&existingConductorID, &existingBackupID)
+	var existingVipID sql.NullInt64
+	err = db.QueryRow("SELECT conductor_id, backup_id, vip_id FROM train_schedules WHERE id = ?", id).Scan(&existingConductorID, &existingBackupID, &existingVipID)
 	if err != nil {
 		http.Error(w, "Schedule not found", http.StatusNotFound)
 		return
@@ -3514,7 +3528,8 @@ func updateTrainSchedule(w http.ResponseWriter, r *http.Request) {
 	// Validate backup is R4 or R5 if backup is being updated
 	if ts.BackupID > 0 {
 		var backupRank string
-		err := db.QueryRow("SELECT rank FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank)
+		var backupMeritEligible bool
+		err := db.QueryRow("SELECT rank, COALESCE(merit_eligible, 0) FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank, &backupMeritEligible)
 		if err != nil {
 			http.Error(w, "Backup member not found", http.StatusBadRequest)
 			return
@@ -3522,6 +3537,12 @@ func updateTrainSchedule(w http.ResponseWriter, r *http.Request) {
 
 		if backupRank != "R4" && backupRank != "R5" {
 			http.Error(w, "Backup must be an R4 or R5 member", http.StatusBadRequest)
+			return
+		}
+
+		// Preserve an existing historical assignment, but block new merit-to-backup assignments.
+		if backupMeritEligible && (!existingBackupID.Valid || int(existingBackupID.Int64) != ts.BackupID) {
+			http.Error(w, "Merit THP members cannot be assigned as R4 backups", http.StatusBadRequest)
 			return
 		}
 	}
@@ -3537,8 +3558,16 @@ func updateTrainSchedule(w http.ResponseWriter, r *http.Request) {
 	var updVipIDVal interface{}
 	var updVipSnapshot string
 	if ts.VipID != nil && *ts.VipID > 0 {
+		var vipMeritEligible bool
 		updVipIDVal = *ts.VipID
-		db.QueryRow("SELECT name FROM members WHERE id = ?", *ts.VipID).Scan(&updVipSnapshot)
+		if err := db.QueryRow("SELECT name, COALESCE(merit_eligible, 0) FROM members WHERE id = ?", *ts.VipID).Scan(&updVipSnapshot, &vipMeritEligible); err != nil {
+			http.Error(w, "VIP member not found", http.StatusBadRequest)
+			return
+		}
+		if vipMeritEligible && (!existingVipID.Valid || existingVipID.Int64 != int64(*ts.VipID)) {
+			http.Error(w, "Merit THP members cannot be assigned to the VIP/flex slot", http.StatusBadRequest)
+			return
+		}
 	}
 
 	_, err = db.Exec(
@@ -3602,7 +3631,7 @@ func autoSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get all eligible members
-	rows, err := db.Query("SELECT id, name, rank, COALESCE(eligible, 1) FROM members WHERE COALESCE(eligible, 1) = 1 AND deleted_at IS NULL ORDER BY name")
+	rows, err := db.Query("SELECT id, name, rank, COALESCE(eligible, 1), COALESCE(merit_eligible, 0) FROM members WHERE COALESCE(eligible, 1) = 1 AND deleted_at IS NULL ORDER BY name")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -3612,7 +3641,7 @@ func autoSchedule(w http.ResponseWriter, r *http.Request) {
 	var candidates []Member
 	for rows.Next() {
 		var m Member
-		if err := rows.Scan(&m.ID, &m.Name, &m.Rank, &m.Eligible); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.Rank, &m.Eligible, &m.MeritEligible); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -3686,6 +3715,7 @@ func autoSchedule(w http.ResponseWriter, r *http.Request) {
 		for _, sc := range scoredCandidates {
 			if !plannedConductors[sc.Member.ID] &&
 				!usedBackups[sc.Member.ID] &&
+				!sc.Member.MeritEligible &&
 				(sc.Member.Rank == "R4" || sc.Member.Rank == "R5") {
 				availableBackups = append(availableBackups, sc.Member)
 			}
@@ -5152,7 +5182,7 @@ func getBackupRotation(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal([]byte(rotationJSON), &order)
 
 	// Fetch all R4/R5 members
-	rows, err := db.Query(`SELECT id, name, rank FROM members WHERE rank IN ('R4', 'R5') AND deleted_at IS NULL ORDER BY name`)
+	rows, err := db.Query(`SELECT id, name, rank FROM members WHERE rank IN ('R4', 'R5') AND COALESCE(merit_eligible, 0) = 0 AND deleted_at IS NULL ORDER BY name`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -5295,13 +5325,13 @@ func luckyDraw(w http.ResponseWriter, r *http.Request) {
 		SELECT m.id, m.name, m.rank
 		FROM members m
 		INNER JOIN tech_donations d ON d.member_id = m.id AND d.week_date = ?
-		WHERE m.deleted_at IS NULL AND m.eligible = 1 AND d.amount >= ?
+		WHERE m.deleted_at IS NULL AND m.eligible = 1 AND COALESCE(m.merit_eligible, 0) = 0 AND d.amount >= ?
 		ORDER BY m.name`, req.Week, threshold)
 
 	if err != nil {
 		// Donations table may not exist yet — fall back to all eligible members
 		log.Printf("luckyDraw: donations query failed (%v), falling back to all eligible members", err)
-		rows, err = db.Query(`SELECT id, name, rank FROM members WHERE deleted_at IS NULL AND eligible = 1 ORDER BY name`)
+		rows, err = db.Query(`SELECT id, name, rank FROM members WHERE deleted_at IS NULL AND eligible = 1 AND COALESCE(merit_eligible, 0) = 0 ORDER BY name`)
 		if err != nil {
 			http.Error(w, "Database error", http.StatusInternalServerError)
 			return
