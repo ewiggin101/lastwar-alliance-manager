@@ -3442,8 +3442,7 @@ func createTrainSchedule(w http.ResponseWriter, r *http.Request) {
 
 	// Validate backup is R4 or R5
 	var backupRank string
-	var backupMeritEligible bool
-	err := db.QueryRow("SELECT rank, COALESCE(merit_eligible, 0) FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank, &backupMeritEligible)
+	err := db.QueryRow("SELECT rank FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank)
 	if err != nil {
 		http.Error(w, "Backup member not found", http.StatusBadRequest)
 		return
@@ -3453,11 +3452,6 @@ func createTrainSchedule(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Backup must be an R4 or R5 member", http.StatusBadRequest)
 		return
 	}
-	if backupMeritEligible {
-		http.Error(w, "Merit THP members cannot be assigned as R4 backups", http.StatusBadRequest)
-		return
-	}
-
 	// Fetch name snapshots (server-authoritative, not from client)
 	var conductorSnapshot string
 	db.QueryRow("SELECT name FROM members WHERE id = ?", ts.ConductorID).Scan(&conductorSnapshot)
@@ -3526,8 +3520,7 @@ func updateTrainSchedule(w http.ResponseWriter, r *http.Request) {
 	// Validate backup is R4 or R5 if backup is being updated
 	if ts.BackupID > 0 {
 		var backupRank string
-		var backupMeritEligible bool
-		err := db.QueryRow("SELECT rank, COALESCE(merit_eligible, 0) FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank, &backupMeritEligible)
+		err := db.QueryRow("SELECT rank FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank)
 		if err != nil {
 			http.Error(w, "Backup member not found", http.StatusBadRequest)
 			return
@@ -3538,11 +3531,6 @@ func updateTrainSchedule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Preserve an existing historical assignment, but block new merit-to-backup assignments.
-		if backupMeritEligible && (!existingBackupID.Valid || int(existingBackupID.Int64) != ts.BackupID) {
-			http.Error(w, "Merit THP members cannot be assigned as R4 backups", http.StatusBadRequest)
-			return
-		}
 	}
 
 	// Fetch name snapshots for the updated schedule
@@ -3713,7 +3701,6 @@ func autoSchedule(w http.ResponseWriter, r *http.Request) {
 		for _, sc := range scoredCandidates {
 			if !plannedConductors[sc.Member.ID] &&
 				!usedBackups[sc.Member.ID] &&
-				!sc.Member.MeritEligible &&
 				(sc.Member.Rank == "R4" || sc.Member.Rank == "R5") {
 				availableBackups = append(availableBackups, sc.Member)
 			}
@@ -5180,7 +5167,7 @@ func getBackupRotation(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal([]byte(rotationJSON), &order)
 
 	// Fetch all R4/R5 members
-	rows, err := db.Query(`SELECT id, name, rank FROM members WHERE rank IN ('R4', 'R5') AND COALESCE(merit_eligible, 0) = 0 AND deleted_at IS NULL ORDER BY name`)
+	rows, err := db.Query(`SELECT id, name, rank FROM members WHERE rank IN ('R4', 'R5') AND deleted_at IS NULL ORDER BY name`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

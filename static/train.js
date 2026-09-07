@@ -367,9 +367,7 @@ async function loadMembers() {
         allMembers = await response.json();
         // Sort members case-insensitively by name
         allMembers.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-        backupMembers = allMembers.filter(m =>
-            (m.rank === 'R4' || m.rank === 'R5') && !isMeritMember(m)
-        );
+        backupMembers = allMembers.filter(m => m.rank === 'R4' || m.rank === 'R5');
         renderMeritPool();
         
         // Load member statistics
@@ -765,14 +763,8 @@ function populateConductorSelect(members, schedule) {
 function populateBackupSelect(members, schedule) {
     const backupSelect = document.getElementById('backup-select');
     backupSelect.innerHTML = '';
-
-    // Keep an existing merit assignment editable, but do not offer merit members for new R4 backup assignments.
-    const currentBackup = schedule && allMembers.find(member => member.id === schedule.backup_id);
-    const selectableMembers = currentBackup && isMeritMember(currentBackup)
-        ? [...members, currentBackup]
-        : members;
     
-    selectableMembers.forEach(member => {
+    members.forEach(member => {
         const option = document.createElement('option');
         option.value = member.id;
         
@@ -782,7 +774,7 @@ function populateBackupSelect(members, schedule) {
         if (stats && stats.backup_used_count > 0) {
             optionText += ` (used as backup ${stats.backup_used_count}x)`;
         }
-        if (isMeritMember(member)) optionText += ' (Merit THP - existing)';
+        if (isMeritMember(member)) optionText += ' (Merit THP)';
         
         option.textContent = optionText;
         option.dataset.name = (member.name + (member.nickname ? ' ' + member.nickname : '')).toLowerCase();
