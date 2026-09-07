@@ -2096,6 +2096,12 @@ Ask in alliance chat for the train to be assigned. Thanks for keeping the train 
 		return err
 	}
 
+	// FarmOps (lastwar.farm) export sync: join-key columns, snapshot fields and
+	// the kill_history / thp_history tables it mirrors into.
+	if err := migrateFarmOpsSchema(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -2995,7 +3001,6 @@ func getMemberStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
-
 // Create a new member
 func createMember(w http.ResponseWriter, r *http.Request) {
 	var input MemberInput
@@ -3125,6 +3130,7 @@ func updateMember(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(savedMember)
 }
+
 // Delete a member
 func deleteMember(w http.ResponseWriter, r *http.Request) {
 	session, _ := store.Get(r, "session")
@@ -17919,6 +17925,10 @@ func main() {
 	}
 	defer db.Close()
 
+	// Mirror the FarmOps alliance export (roster, power/kill/THP history, weekly
+	// donations) into the local database on a timer. No-op without an API key.
+	go startFarmOpsSyncLoop()
+
 	router := mux.NewRouter()
 
 	// Health check (public, no auth required)
@@ -18027,6 +18037,7 @@ func main() {
 	router.HandleFunc("/api/power-history", authMiddleware(addPowerRecord)).Methods("POST")
 	router.HandleFunc("/api/power-history/process-screenshot", authMiddleware(processPowerScreenshot)).Methods("POST")
 	router.HandleFunc("/api/merit-pool/refresh", authMiddleware(rankManagementMiddleware(refreshMeritTHP))).Methods("POST")
+	router.HandleFunc("/api/farmops/sync", authMiddleware(rankManagementMiddleware(handleFarmOpsSync))).Methods("POST")
 
 	// Marshal Guard routes (protected)
 	router.HandleFunc("/api/marshal-guard", authMiddleware(listMarshalGuardEvents)).Methods("GET")
