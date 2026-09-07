@@ -2222,39 +2222,54 @@ button {
 }
 
 .merit-pool-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 10px;
+    min-width: 0;
 }
 
-.merit-pool-member {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px;
-    background: var(--container-bg);
+.merit-pool-table-wrap {
+    overflow-x: auto;
     border: 1px solid var(--border-color);
     border-radius: 8px;
 }
 
-.merit-pool-position {
-    display: grid;
-    place-items: center;
-    min-width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    background: var(--warning-light);
-    color: var(--warning-dark);
-    font-weight: 700;
+.merit-pool-table {
+    width: 100%;
+    border-collapse: collapse;
+    color: var(--text-primary);
 }
 
-.merit-pool-member-info {
-    display: flex;
-    flex: 1;
-    min-width: 0;
-    flex-direction: column;
-    gap: 3px;
-    color: var(--text-primary);
+.merit-pool-table th,
+.merit-pool-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color);
+    text-align: left;
+}
+
+.merit-pool-table th {
+    background: var(--container-bg);
+    color: var(--text-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.merit-pool-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.merit-pool-table tbody tr:hover {
+    background: var(--hover-bg);
+}
+
+.merit-pool-table .merit-pool-position {
+    width: 42px;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-align: center;
+}
+
+.merit-pool-name {
+    font-weight: 600;
+    white-space: nowrap;
 }
 
 .merit-pool-rank {
@@ -2262,10 +2277,18 @@ button {
     font-size: 12px;
 }
 
-.merit-pool-power {
+.merit-pool-table .merit-pool-power {
     color: var(--text-secondary);
     font-size: 12px;
     white-space: nowrap;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.merit-pool-note {
+    margin: 10px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
 }
 
 .schedule-controls {

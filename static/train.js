@@ -395,20 +395,36 @@ function renderMeritPool() {
         return;
     }
 
-    list.innerHTML = meritMembers.map((member, index) => {
+    const hasRecordedPower = meritMembers.some(member => Number(member.power) > 0);
+    const rows = meritMembers.map((member, index) => {
         const power = Number(member.power) || 0;
-        const powerText = power > 0 ? `${power.toLocaleString()} THP` : 'THP not recorded';
+        const powerText = power > 0 ? `${power.toLocaleString()} THP` : '&mdash;';
         return `
-            <div class="merit-pool-member">
-                <span class="merit-pool-position">${index + 1}</span>
-                <div class="merit-pool-member-info">
-                    <strong>${nameNick(member.name, member.nickname)}</strong>
-                    <span class="merit-pool-rank">${escapeHtml(member.rank)}</span>
-                </div>
-                <span class="merit-pool-power">${powerText}</span>
-            </div>
+            <tr>
+                <td class="merit-pool-position">${index + 1}</td>
+                <td class="merit-pool-name">${nameNick(member.name, member.nickname)}</td>
+                <td><span class="merit-pool-rank">${escapeHtml(member.rank)}</span></td>
+                <td class="merit-pool-power">${powerText}</td>
+            </tr>
         `;
     }).join('');
+
+    list.innerHTML = `
+        <div class="merit-pool-table-wrap">
+            <table class="merit-pool-table">
+                <thead>
+                    <tr>
+                        <th scope="col">#</th>
+                        <th scope="col">Member</th>
+                        <th scope="col">Rank</th>
+                        <th scope="col">THP</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+        ${hasRecordedPower ? '' : '<p class="merit-pool-note">THP is not recorded for these members yet.</p>'}
+    `;
 }
 
 // Load member statistics
