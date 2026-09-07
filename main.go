@@ -3440,23 +3440,33 @@ func createTrainSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate backup is R4 or R5
-	var backupRank string
-	err := db.QueryRow("SELECT rank FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank)
-	if err != nil {
-		http.Error(w, "Backup member not found", http.StatusBadRequest)
-		return
+	// Validate and snapshot the backup only when one is selected.
+	var backupIDVal interface{}
+	var backupSnapshot interface{}
+	if ts.BackupID > 0 {
+		var backupRank string
+		if err := db.QueryRow("SELECT rank FROM members WHERE id = ?", ts.BackupID).Scan(&backupRank); err != nil {
+			http.Error(w, "Backup member not found", http.StatusBadRequest)
+			return
+		}
+
+		if backupRank != "R4" && backupRank != "R5" {
+			http.Error(w, "Backup must be an R4 or R5 member", http.StatusBadRequest)
+			return
+		}
+
+		var backupName string
+		if err := db.QueryRow("SELECT name FROM members WHERE id = ?", ts.BackupID).Scan(&backupName); err != nil {
+			http.Error(w, "Backup member not found", http.StatusBadRequest)
+			return
+		}
+		backupIDVal = ts.BackupID
+		backupSnapshot = backupName
 	}
 
-	if backupRank != "R4" && backupRank != "R5" {
-		http.Error(w, "Backup must be an R4 or R5 member", http.StatusBadRequest)
-		return
-	}
 	// Fetch name snapshots (server-authoritative, not from client)
 	var conductorSnapshot string
 	db.QueryRow("SELECT name FROM members WHERE id = ?", ts.ConductorID).Scan(&conductorSnapshot)
-	var backupSnapshot string
-	db.QueryRow("SELECT name FROM members WHERE id = ?", ts.BackupID).Scan(&backupSnapshot)
 
 	var vipIDVal interface{}
 	var vipSnapshot string
@@ -3476,7 +3486,7 @@ func createTrainSchedule(w http.ResponseWriter, r *http.Request) {
 	// Use INSERT OR REPLACE to allow updating schedules created by auto-schedule
 	result, err := db.Exec(
 		"INSERT OR REPLACE INTO train_schedules (date, conductor_id, backup_id, conductor_score, conductor_showed_up, actual_conductor_id, notes, conductor_name_snapshot, backup_name_snapshot, vip_id, vip_name_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		ts.Date, ts.ConductorID, ts.BackupID, ts.ConductorScore, ts.ConductorShowedUp, ts.ActualConductorID, ts.Notes, conductorSnapshot, backupSnapshot, vipIDVal, vipSnapshot)
+		ts.Date, ts.ConductorID, backupIDVal, ts.ConductorScore, ts.ConductorShowedUp, ts.ActualConductorID, ts.Notes, conductorSnapshot, backupSnapshot, vipIDVal, vipSnapshot)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -3536,9 +3546,13 @@ func updateTrainSchedule(w http.ResponseWriter, r *http.Request) {
 	// Fetch name snapshots for the updated schedule
 	var updConductorSnapshot string
 	db.QueryRow("SELECT name FROM members WHERE id = ?", ts.ConductorID).Scan(&updConductorSnapshot)
-	var updBackupSnapshot string
+	var updBackupIDVal interface{}
+	var updBackupSnapshot interface{}
 	if ts.BackupID > 0 {
-		db.QueryRow("SELECT name FROM members WHERE id = ?", ts.BackupID).Scan(&updBackupSnapshot)
+		var updBackupName string
+		db.QueryRow("SELECT name FROM members WHERE id = ?", ts.BackupID).Scan(&updBackupName)
+		updBackupIDVal = ts.BackupID
+		updBackupSnapshot = updBackupName
 	}
 
 	var updVipIDVal interface{}
@@ -3558,7 +3572,7 @@ func updateTrainSchedule(w http.ResponseWriter, r *http.Request) {
 
 	_, err = db.Exec(
 		"UPDATE train_schedules SET date = ?, conductor_id = ?, backup_id = ?, conductor_score = ?, conductor_showed_up = ?, actual_conductor_id = ?, notes = ?, conductor_name_snapshot = ?, backup_name_snapshot = ?, vip_id = ?, vip_name_snapshot = ? WHERE id = ?",
-		ts.Date, ts.ConductorID, ts.BackupID, ts.ConductorScore, ts.ConductorShowedUp, ts.ActualConductorID, ts.Notes, updConductorSnapshot, updBackupSnapshot, updVipIDVal, updVipSnapshot, id)
+		ts.Date, ts.ConductorID, updBackupIDVal, ts.ConductorScore, ts.ConductorShowedUp, ts.ActualConductorID, ts.Notes, updConductorSnapshot, updBackupSnapshot, updVipIDVal, updVipSnapshot, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

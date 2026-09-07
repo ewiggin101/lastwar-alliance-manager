@@ -27,6 +27,17 @@ function nameNick(name, nick) {
     return `${escapeHtml(name)} <span class="member-nickname">aka ${escapeHtml(nick)}</span>`;
 }
 
+function backupDisplayName(schedule, includeRank = false) {
+    if (!schedule || !schedule.backup_id) {
+        return '<span class="backup-none">No backup assigned</span>';
+    }
+
+    const name = nameNick(schedule.backup_name || '[Removed Member]', nickByID(schedule.backup_id));
+    return includeRank && schedule.backup_rank
+        ? `${name} (${escapeHtml(schedule.backup_rank)})`
+        : name;
+}
+
 // Check authentication on page load
 async function checkAuth() {
     try {
@@ -500,7 +511,7 @@ function renderScheduleList() {
             html += `<td>${nameNick(schedule.conductor_name, nickByID(schedule.conductor_id))}`;
             if (schedule.conductor_score != null) html += ` <span class="score-badge">${schedule.conductor_score}</span>`;
             html += `</td>`;
-            html += `<td>${nameNick(schedule.backup_name, nickByID(schedule.backup_id))}`;
+            html += `<td>${backupDisplayName(schedule)}`;
             if (schedule.conductor_showed_up === false) {
                 html += schedule.actual_conductor_id
                     ? ` <span class="status-badge info">→ ${nameNick(schedule.actual_conductor_name, nickByID(schedule.actual_conductor_id))}</span>`
@@ -570,13 +581,13 @@ function renderScheduleGrid() {
             }
             html += `</div>`;
             html += `<div class="backup">`;
-            html += `<strong>Backup:</strong><br>${nameNick(schedule.backup_name, nickByID(schedule.backup_id))} (${schedule.backup_rank})`;
+            html += `<strong>Backup:</strong><br>${backupDisplayName(schedule, true)}`;
             if (schedule.conductor_showed_up === false) {
                 if (schedule.actual_conductor_id) {
                     // Backup assigned to someone else
                     html += ' <span class="status-badge info">📋 Assigned to:</span>';
                     html += `<br><strong>${nameNick(schedule.actual_conductor_name, nickByID(schedule.actual_conductor_id))}</strong>`;
-                } else {
+                } else if (schedule.backup_id) {
                     // Backup conducted it themselves
                     html += ' <span class="status-badge active">🚂 Stepped in</span>';
                 }
@@ -763,6 +774,12 @@ function populateConductorSelect(members, schedule) {
 function populateBackupSelect(members, schedule) {
     const backupSelect = document.getElementById('backup-select');
     backupSelect.innerHTML = '';
+
+    const noneOption = document.createElement('option');
+    noneOption.value = '';
+    noneOption.textContent = '— No backup assigned —';
+    noneOption.selected = !schedule || !schedule.backup_id;
+    backupSelect.appendChild(noneOption);
     
     members.forEach(member => {
         const option = document.createElement('option');
@@ -992,7 +1009,8 @@ document.getElementById('schedule-form').addEventListener('submit', async (e) =>
     const id = document.getElementById('schedule-id').value;
     const date = document.getElementById('schedule-date').value;
     const conductorId = parseInt(document.getElementById('conductor-select').value);
-    const backupId = parseInt(document.getElementById('backup-select').value);
+    const backupValue = document.getElementById('backup-select').value;
+    const backupId = backupValue ? parseInt(backupValue) : 0;
     const vipSelectVal = document.getElementById('vip-select').value;
     const vipId = (vipSeatEnabled && vipSelectVal) ? parseInt(vipSelectVal) : null;
     const notes = document.getElementById('notes').value.trim() || null;
@@ -1145,12 +1163,12 @@ function renderHistory(filter) {
                 ' <span class="status-badge warning">✗</span>';
         }
         html += `</div>`;
-        html += `<div><strong>Backup:</strong> ${nameNick(schedule.backup_name, nickByID(schedule.backup_id))}`;
+        html += `<div><strong>Backup:</strong> ${backupDisplayName(schedule)}`;
         if (schedule.conductor_showed_up === false) {
             if (schedule.actual_conductor_id) {
                 // Backup assigned to someone else
                 html += ' <span class="status-badge info">📋 Assigned to ' + nameNick(schedule.actual_conductor_name, nickByID(schedule.actual_conductor_id)) + '</span>';
-            } else {
+            } else if (schedule.backup_id) {
                 // Backup conducted it themselves
                 html += ' <span class="status-badge active">🚂 Stepped in</span>';
             }

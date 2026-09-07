@@ -2291,6 +2291,11 @@ button {
     font-size: 12px;
 }
 
+.backup-none {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
 .schedule-controls {
     background: var(--card-bg);
     padding: 20px;
