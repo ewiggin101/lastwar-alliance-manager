@@ -3107,24 +3107,22 @@ func updateMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	member := Member{
-		ID:            id,
-		Name:          name,
-		Nickname:      current.Nickname,
-		Rank:          rank,
-		Eligible:      eligible,
-		MeritEligible: meritEligible,
+	var savedMember Member
+	var savedNickname sql.NullString
+	if err := db.QueryRow(`
+		SELECT id, name, nickname, rank, COALESCE(eligible, 1), COALESCE(merit_eligible, 0)
+		FROM members
+		WHERE id = ? AND deleted_at IS NULL
+	`, id).Scan(&savedMember.ID, &savedMember.Name, &savedNickname, &savedMember.Rank, &savedMember.Eligible, &savedMember.MeritEligible); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	if input.Nickname != nil {
-		if *input.Nickname != "" {
-			member.Nickname = input.Nickname
-		} else {
-			member.Nickname = nil
-		}
+	if savedNickname.Valid && savedNickname.String != "" {
+		savedMember.Nickname = &savedNickname.String
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(member)
+	json.NewEncoder(w).Encode(savedMember)
 }
 // Delete a member
 func deleteMember(w http.ResponseWriter, r *http.Request) {
@@ -17815,8 +17813,12 @@ func main() {
 		w.Write([]byte(`{"status":"ready"}`))
 	}).Methods("GET")
 
-	// Serve static files
-	router.PathPrefix("/").Handler(http.FileServer(http.Dir("./static")))
+	// Serve static files and ask browsers to revalidate asset changes.
+	fileServer := http.FileServer(http.Dir("./static"))
+	router.PathPrefix("/").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		fileServer.ServeHTTP(w, r)
+	}))
 
 	port := os.Getenv("PORT")
 	if port == "" {

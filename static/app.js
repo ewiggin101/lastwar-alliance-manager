@@ -300,6 +300,11 @@ document.getElementById('member-form').addEventListener('submit', async (e) => {
             });
 
             if (!response.ok) throw new Error('Failed to update member');
+
+            const savedMember = await response.json();
+            if (isMeritEligible(savedMember) !== meritEligible) {
+                throw new Error('The server did not save the Merit THP setting');
+            }
             
             editingMemberId = null;
         } else {
