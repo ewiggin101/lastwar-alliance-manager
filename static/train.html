@@ -59,14 +59,17 @@
 
             <section class="merit-pool-section">
                 <div class="merit-pool-header">
-                    <div>
-                        <h3>🏅 Merit THP Pool <span id="merit-pool-count" class="merit-pool-count"></span></h3>
-                        <p class="info-text">Members marked on the Members page for merit-day consideration. Merit THP members remain eligible for backup assignments, but are excluded from VIP/flex selection.</p>
-                    </div>
+                    <button type="button" id="merit-pool-toggle" class="merit-pool-toggle" aria-expanded="true" aria-controls="merit-pool-content" title="Minimize merit pool">
+                        <span class="merit-pool-title">🏅 Merit THP Pool <span id="merit-pool-count" class="merit-pool-count"></span></span>
+                        <span class="merit-pool-toggle-label">Minimize <span aria-hidden="true">v</span></span>
+                    </button>
                     <a href="index.html" class="secondary-btn">Manage Members</a>
                 </div>
-                <div id="merit-pool-list" class="merit-pool-list">
-                    <p class="loading">Loading merit pool...</p>
+                <div id="merit-pool-content" class="merit-pool-content">
+                    <p class="info-text">Members marked on the Members page for merit-day consideration. Merit THP members remain eligible for backup assignments, but are excluded from VIP/flex selection.</p>
+                    <div id="merit-pool-list" class="merit-pool-list">
+                        <p class="loading">Loading merit pool...</p>
+                    </div>
                 </div>
             </section>
 

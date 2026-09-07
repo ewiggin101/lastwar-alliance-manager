@@ -38,6 +38,33 @@ function backupDisplayName(schedule, includeRank = false) {
         : name;
 }
 
+function setMeritPoolCollapsed(collapsed) {
+    const toggle = document.getElementById('merit-pool-toggle');
+    const content = document.getElementById('merit-pool-content');
+    if (!toggle || !content) return;
+
+    content.hidden = collapsed;
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.title = collapsed ? 'Expand merit pool' : 'Minimize merit pool';
+    const label = toggle.querySelector('.merit-pool-toggle-label');
+    if (label) {
+        label.innerHTML = `${collapsed ? 'Expand' : 'Minimize'} <span aria-hidden="true">${collapsed ? '&gt;' : 'v'}</span>`;
+    }
+    localStorage.setItem('meritPoolCollapsed', String(collapsed));
+}
+
+function initMeritPoolToggle() {
+    const toggle = document.getElementById('merit-pool-toggle');
+    if (!toggle) return;
+
+    const collapsed = localStorage.getItem('meritPoolCollapsed') === 'true';
+    setMeritPoolCollapsed(collapsed);
+    toggle.addEventListener('click', () => {
+        const content = document.getElementById('merit-pool-content');
+        setMeritPoolCollapsed(!content.hidden);
+    });
+}
+
 // Check authentication on page load
 async function checkAuth() {
     try {
@@ -1292,6 +1319,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } catch {}
         applyVipSeatVisibility();
+        initMeritPoolToggle();
 
         await setupEventListeners();
         await loadMembers();
