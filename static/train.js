@@ -65,6 +65,56 @@ function initMeritPoolToggle() {
     });
 }
 
+async function refreshMeritTHP() {
+    const button = document.getElementById('refresh-merit-thp-btn');
+    const status = document.getElementById('merit-pool-refresh-status');
+    if (!button) return;
+
+    setButtonLoading(button, 'Refreshing...');
+    if (status) status.textContent = '';
+
+    try {
+        const response = await fetch('/api/merit-pool/refresh', { method: 'POST' });
+        if (!response.ok) {
+            throw new Error((await response.text()) || 'Failed to refresh Merit THP');
+        }
+
+        const result = await response.json();
+        await loadMembers();
+
+        const summary = [
+            `${result.updated_count} updated`,
+            `${result.unchanged_count} unchanged`
+        ];
+        if (result.unmatched_count) summary.push(`${result.unmatched_count} unmatched`);
+        if (result.no_thp_count) summary.push(`${result.no_thp_count} missing THP`);
+
+        const unmatched = (result.members || [])
+            .filter(member => member.status === 'unmatched')
+            .map(member => member.local_name);
+        if (status) {
+            status.textContent = summary.join(' · ') + (unmatched.length ? `: ${unmatched.join(', ')}` : '');
+        }
+        showToast(result.message, 'success');
+    } catch (error) {
+        console.error('Error refreshing Merit THP:', error);
+        if (status) status.textContent = error.message;
+        showToast(`Failed to refresh Merit THP: ${error.message}`, 'error');
+    } finally {
+        clearButtonLoading(button);
+    }
+}
+
+function initMeritTHPRefresh() {
+    const button = document.getElementById('refresh-merit-thp-btn');
+    if (!button) return;
+    if (!canEditSchedule()) {
+        button.style.display = 'none';
+        return;
+    }
+    button.addEventListener('click', refreshMeritTHP);
+}
+
 // Check authentication on page load
 async function checkAuth() {
     try {
@@ -1320,6 +1370,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch {}
         applyVipSeatVisibility();
         initMeritPoolToggle();
+        initMeritTHPRefresh();
 
         await setupEventListeners();
         await loadMembers();

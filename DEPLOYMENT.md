@@ -35,6 +35,15 @@ echo "SESSION_KEY=your-64-char-hex-key-here" > .env
 chmod 600 .env
 ```
 
+For authenticated THP refreshes from FarmOps, add the API key to the same
+protected file. If it is omitted, the Merit THP refresh uses the public
+WARDAWGG roster instead:
+
+```bash
+printf '\nLASTWAR_FARM_API_KEY=fops_live_your-key\n' >> .env
+chmod 600 .env
+```
+
 Alternatively edit `docker-compose.yml` and set `SESSION_KEY` directly:
 
 ```yaml

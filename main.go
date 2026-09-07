@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -7600,6 +7601,277 @@ func addPowerRecord(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message": "Power record added successfully",
 		"id":      id,
+	})
+}
+
+const (
+	wardawggAllianceURL = "https://rank.wardawgg.com/v1/alliances/be0ffd14a5d2400a9fc24d547402bcf7?member_limit=100"
+	farmOpsTHPURL       = "https://www.lastwar.farm/api/v1/alliance/members/thp"
+)
+
+type wardawggMember struct {
+	Name      string `json:"name"`
+	HeroPower *int64 `json:"hero_power"`
+}
+
+type wardawggAlliance struct {
+	Members []wardawggMember `json:"members"`
+}
+
+type farmOpsTHPEntry struct {
+	MemberName     string `json:"memberName"`
+	TotalHeroPower string `json:"totalHeroPower"`
+	RecordedAt     string `json:"recordedAt"`
+}
+
+type farmOpsTHPPayload struct {
+	Data []farmOpsTHPEntry `json:"data"`
+}
+
+type meritRefreshMember struct {
+	LocalName  string `json:"local_name"`
+	SourceName string `json:"source_name,omitempty"`
+	THP        *int64 `json:"thp,omitempty"`
+	Status     string `json:"status"`
+}
+
+// wardawggDiacriticReplacer covers the accented characters currently present
+// in the alliance data while keeping the app dependency-free.
+var wardawggDiacriticReplacer = strings.NewReplacer(
+	"ā", "a", "á", "a", "à", "a", "ä", "a", "â", "a", "ã", "a",
+	"ē", "e", "é", "e", "è", "e", "ë", "e", "ê", "e",
+	"ī", "i", "í", "i", "ì", "i", "ï", "i", "î", "i",
+	"ō", "o", "ó", "o", "ò", "o", "ö", "o", "ô", "o", "õ", "o",
+	"ū", "u", "ú", "u", "ù", "u", "ü", "u", "û", "u",
+	"ñ", "n", "ç", "c", "ø", "o", "æ", "ae", "œ", "oe",
+)
+
+func normalizeWardawggName(name string) string {
+	return normalizeName(wardawggDiacriticReplacer.Replace(strings.ToLower(name)))
+}
+
+func parseExternalTHP(value string) *int64 {
+	thp, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || thp <= 0 {
+		return nil
+	}
+	return &thp
+}
+
+func fetchMeritTHPMembers(ctx context.Context) ([]wardawggMember, string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("LASTWAR_FARM_API_KEY"))
+	if apiKey == "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, wardawggAllianceURL, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "lastwar-alliance-manager/1.0")
+
+		resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+		if err != nil {
+			return nil, "", err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, "", fmt.Errorf("WARDAWGG returned HTTP %d", resp.StatusCode)
+		}
+
+		var payload wardawggAlliance
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&payload); err != nil {
+			return nil, "", err
+		}
+		if len(payload.Members) == 0 {
+			return nil, "", fmt.Errorf("WARDAWGG returned no members")
+		}
+		return payload.Members, "WARDAWGG", nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, farmOpsTHPURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
+		req.Header.Set("Authorization", apiKey)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "lastwar-alliance-manager/1.0")
+
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("lastwar.farm returned HTTP %d", resp.StatusCode)
+	}
+
+	var payload farmOpsTHPPayload
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&payload); err != nil {
+		return nil, "", err
+	}
+	if len(payload.Data) == 0 {
+		return nil, "", fmt.Errorf("lastwar.farm returned no THP records")
+	}
+
+	latest := make(map[string]wardawggMember, len(payload.Data))
+	latestAt := make(map[string]time.Time, len(payload.Data))
+	for _, entry := range payload.Data {
+		key := normalizeWardawggName(entry.MemberName)
+		if key == "" {
+			continue
+		}
+		recordedAt, _ := time.Parse(time.RFC3339, entry.RecordedAt)
+		if previous, ok := latestAt[key]; ok && recordedAt.Before(previous) {
+			continue
+		}
+		latest[key] = wardawggMember{
+			Name:      entry.MemberName,
+			HeroPower: parseExternalTHP(entry.TotalHeroPower),
+		}
+		latestAt[key] = recordedAt
+	}
+
+	members := make([]wardawggMember, 0, len(latest))
+	for _, member := range latest {
+		members = append(members, member)
+	}
+	if len(members) == 0 {
+		return nil, "", fmt.Errorf("lastwar.farm returned no usable THP records")
+	}
+	return members, "lastwar.farm", nil
+}
+
+// refreshMeritTHP fetches the public WARDAWGG roster and records hero power
+// only for active members explicitly marked for the Merit THP Pool.
+func refreshMeritTHP(w http.ResponseWriter, r *http.Request) {
+	sourceMembers, sourceName, err := fetchMeritTHPMembers(r.Context())
+	if err != nil {
+		http.Error(w, "Failed to fetch Merit THP data: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	byName := make(map[string][]wardawggMember, len(sourceMembers))
+	for _, member := range sourceMembers {
+		key := normalizeWardawggName(member.Name)
+		if key != "" {
+			byName[key] = append(byName[key], member)
+		}
+	}
+
+	rows, err := db.Query(`
+		SELECT id, name, COALESCE(nickname, '')
+		FROM members
+		WHERE merit_eligible = 1 AND deleted_at IS NULL
+		ORDER BY name
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type localMeritMember struct {
+		ID       int
+		Name     string
+		Nickname string
+	}
+	var localMembers []localMeritMember
+	for rows.Next() {
+		var member localMeritMember
+		if err := rows.Scan(&member.ID, &member.Name, &member.Nickname); err != nil {
+			rows.Close()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		localMembers = append(localMembers, member)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rows.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	results := make([]meritRefreshMember, 0, len(localMembers))
+	updatedCount := 0
+	unchangedCount := 0
+	unmatchedCount := 0
+	noTHPCount := 0
+
+	for _, local := range localMembers {
+		result := meritRefreshMember{LocalName: local.Name}
+		candidates := byName[normalizeWardawggName(local.Name)]
+		if len(candidates) == 0 && local.Nickname != "" {
+			candidates = byName[normalizeWardawggName(local.Nickname)]
+		}
+		if len(candidates) != 1 {
+			result.Status = "unmatched"
+			unmatchedCount++
+			results = append(results, result)
+			continue
+		}
+
+		source := candidates[0]
+		result.SourceName = source.Name
+		if source.HeroPower == nil || *source.HeroPower <= 0 {
+			result.Status = "no_thp"
+			noTHPCount++
+			results = append(results, result)
+			continue
+		}
+		thp := *source.HeroPower
+		result.THP = &thp
+
+		var current sql.NullInt64
+		err := tx.QueryRow(`
+			SELECT power
+			FROM power_history
+			WHERE member_id = ?
+			ORDER BY recorded_at DESC, id DESC
+			LIMIT 1
+		`, local.ID).Scan(&current)
+		if err != nil && err != sql.ErrNoRows {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if current.Valid && current.Int64 == thp {
+			result.Status = "unchanged"
+			unchangedCount++
+		} else {
+			if _, err := tx.Exec("INSERT INTO power_history (member_id, power) VALUES (?, ?)", local.ID, thp); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			result.Status = "updated"
+			updatedCount++
+		}
+		results = append(results, result)
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":         fmt.Sprintf("Updated %d Merit THP record(s) from %s", updatedCount, sourceName),
+		"source":          sourceName,
+		"updated_count":   updatedCount,
+		"unchanged_count": unchangedCount,
+		"unmatched_count": unmatchedCount,
+		"no_thp_count":    noTHPCount,
+		"members":         results,
 	})
 }
 
@@ -17754,6 +18026,7 @@ func main() {
 	router.HandleFunc("/api/power-history", authMiddleware(getPowerHistory)).Methods("GET")
 	router.HandleFunc("/api/power-history", authMiddleware(addPowerRecord)).Methods("POST")
 	router.HandleFunc("/api/power-history/process-screenshot", authMiddleware(processPowerScreenshot)).Methods("POST")
+	router.HandleFunc("/api/merit-pool/refresh", authMiddleware(rankManagementMiddleware(refreshMeritTHP))).Methods("POST")
 
 	// Marshal Guard routes (protected)
 	router.HandleFunc("/api/marshal-guard", authMiddleware(listMarshalGuardEvents)).Methods("GET")

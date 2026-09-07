@@ -2203,6 +2203,13 @@ button {
     gap: 12px;
 }
 
+.merit-pool-actions {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 8px;
+}
+
 .merit-pool-toggle {
     display: flex;
     flex: 1;
@@ -2334,6 +2341,28 @@ button {
     margin: 10px 0 0;
     color: var(--text-muted);
     font-size: 12px;
+}
+
+.merit-pool-refresh-status {
+    margin: 8px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+@media (max-width: 768px) {
+    .merit-pool-header {
+        flex-wrap: wrap;
+    }
+
+    .merit-pool-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .merit-pool-actions .secondary-btn {
+        width: auto;
+        padding: 8px 10px;
+    }
 }
 
 .backup-none {

@@ -14,6 +14,7 @@ services:
     environment:
       DATABASE_PATH: /data/alliance.db
       SESSION_KEY: "${SESSION_KEY}"
+      LASTWAR_FARM_API_KEY: "${LASTWAR_FARM_API_KEY}"
       # Writes Marshal Guard OCR debug crops into the data volume
       MG_DEBUG_DIR: "/data/mg-debug"
     restart: unless-stopped

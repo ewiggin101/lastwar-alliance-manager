@@ -49,6 +49,35 @@ func TestNormalizeName_GermanDiacritics(t *testing.T) {
 	}
 }
 
+func TestNormalizeWardawggName_Accents(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Kāido", "kaido"},
+		{"Mïaaa", "miaaa"},
+		{"The Baja Wears Prada", "bajawearsprada"},
+	}
+	for _, tt := range tests {
+		got := normalizeWardawggName(tt.input)
+		if got != tt.want {
+			t.Errorf("normalizeWardawggName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseExternalTHP(t *testing.T) {
+	valid := parseExternalTHP("329851121")
+	if valid == nil || *valid != 329851121 {
+		t.Fatalf("parseExternalTHP(valid) = %v, want 329851121", valid)
+	}
+	for _, input := range []string{"", "0", "-1", "not-a-number"} {
+		if got := parseExternalTHP(input); got != nil {
+			t.Errorf("parseExternalTHP(%q) = %v, want nil", input, got)
+		}
+	}
+}
+
 func TestCalculateSimilarity_ShortContainmentGuard(t *testing.T) {
 	tests := []struct {
 		a, b      string
