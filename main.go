@@ -322,11 +322,24 @@ type ConfirmRequest struct {
 	Renames         []RenameInfo     `json:"renames"`
 }
 
+// PossibleDuplicate flags an incoming name that was NOT imported because it
+// normalizes to the same thing as an existing member. Bulk imports must not
+// abort on one bad row, but silently dropping a name is how a player quietly
+// goes missing from a whole week of scores — so each one is reported for a
+// human to resolve.
+type PossibleDuplicate struct {
+	Name    string `json:"name"`    // the name in the import
+	Matches string `json:"matches"` // the existing member it resembles
+}
+
 type ConfirmResult struct {
 	Added     int `json:"added"`
 	Updated   int `json:"updated"`
 	Unchanged int `json:"unchanged"`
 	Removed   int `json:"removed"`
+	// Names skipped as probable duplicates; needs a human decision (rename the
+	// existing member, add this spelling as their nickname, or import anyway).
+	NeedsReview []PossibleDuplicate `json:"needs_review,omitempty"`
 }
 
 type VSPoints struct {
@@ -7476,6 +7489,7 @@ func autoRegisterMembers(w http.ResponseWriter, r *http.Request) {
 
 	added := []string{}
 	skipped := []string{}
+	needsReview := []PossibleDuplicate{}
 
 	for _, name := range req.Names {
 		name = strings.TrimSpace(name)
@@ -7489,6 +7503,14 @@ func autoRegisterMembers(w http.ResponseWriter, r *http.Request) {
 			skipped = append(skipped, name)
 			continue
 		}
+		// The exact check above misses a name that differs only by look-alike
+		// glyphs. Skip it rather than creating a second record for one player,
+		// but report it — this is a judgement call, not a no-op.
+		if match, err := findConfusableMember(name, 0); err == nil && match != "" {
+			log.Printf("autoRegisterMembers: %q looks like existing member %q, not registered", name, match) // #nosec G706 -- %q prevents log injection
+			needsReview = append(needsReview, PossibleDuplicate{Name: name, Matches: match})
+			continue
+		}
 		_, err = db.Exec("INSERT INTO members (name, rank, eligible) VALUES (?, 'R1', 1)", name)
 		if err != nil {
 			log.Printf("autoRegisterMembers: failed to insert %q: %v", name, err)
@@ -7499,10 +7521,15 @@ func autoRegisterMembers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	message := fmt.Sprintf("Registered %d new member(s) as R1", len(added))
+	if len(needsReview) > 0 {
+		message += fmt.Sprintf("; %d name(s) look like existing members and need review", len(needsReview))
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"added":   added,
-		"skipped": skipped,
-		"message": fmt.Sprintf("Registered %d new member(s) as R1", len(added)),
+		"added":        added,
+		"skipped":      skipped,
+		"needs_review": needsReview,
+		"message":      message,
 	})
 }
 
@@ -7540,6 +7567,14 @@ func confirmMemberUpdates(w http.ResponseWriter, r *http.Request) {
 		err := db.QueryRow("SELECT id, rank FROM members WHERE name = ? AND deleted_at IS NULL", member.Name).Scan(&existingID, &existingRank)
 
 		if err == sql.ErrNoRows {
+			// No exact match, but the name may differ from an existing member
+			// only by look-alike glyphs. Import the rest of the batch and flag
+			// this one rather than creating a duplicate record.
+			if match, mErr := findConfusableMember(member.Name, 0); mErr == nil && match != "" {
+				log.Printf("confirmMemberUpdates: %q looks like existing member %q, not added", member.Name, match) // #nosec G706 -- %q prevents log injection
+				result.NeedsReview = append(result.NeedsReview, PossibleDuplicate{Name: member.Name, Matches: match})
+				continue
+			}
 			// Add new member
 			_, err = db.Exec("INSERT INTO members (name, rank) VALUES (?, ?)", member.Name, member.Rank)
 			if err != nil {
