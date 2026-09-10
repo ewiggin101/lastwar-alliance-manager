@@ -9968,14 +9968,86 @@ var germanDiacriticReplacer = strings.NewReplacer(
 	"Ä", "a", "Ö", "o", "Ü", "u",
 )
 
+// confusableFolder maps visually-identical glyphs onto plain Latin, so a name
+// written with Cyrillic or decorative characters matches the same name typed
+// normally.
+//
+// Last War handles routinely mix scripts for style: "ʚмаЯiаɞ" reads as "Maria"
+// but is Cyrillic м/а/Я spliced with Latin i and two decorative brackets, and
+// shares almost no code points with it. Without folding, neither exact nor
+// fuzzy matching can connect the two — screenshot rows for those players
+// matched nothing at all, and OCR that guesses a plain "i" where the roster has
+// "ï" fell below the 70% similarity threshold and was discarded.
+//
+// Folding is applied to BOTH sides of every comparison (see normalizeName), so
+// it only ever makes matching more permissive. It was validated against the
+// live 101-member roster: exactly one pair collided, and that pair was a
+// genuine duplicate of one player ("LA Laker Gal" / "ᴸA LᴀKEя Gᴀʟ"). Re-run
+// that check before widening this map — a collision silently credits the wrong
+// member, which is worse than no match at all.
+//
+// CJK is deliberately absent: Hangul and kana in these names are real content,
+// not lookalikes for Latin letters.
+var confusableFolder = strings.NewReplacer(
+	// Cyrillic letters that render as Latin.
+	"а", "a", "е", "e", "о", "o", "р", "p", "с", "c", "у", "y", "х", "x",
+	"і", "i", "ѕ", "s", "ј", "j", "м", "m", "я", "r", "к", "k", "т", "t",
+	"А", "a", "В", "b", "Е", "e", "К", "k", "М", "m", "Н", "h", "О", "o",
+	"Р", "p", "С", "c", "Т", "t", "Х", "x", "Я", "r",
+	// Latin letters carrying diacritics or strokes.
+	"á", "a", "à", "a", "â", "a", "ã", "a", "å", "a",
+	"é", "e", "è", "e", "ê", "e", "ë", "e",
+	"í", "i", "ì", "i", "î", "i", "ï", "i",
+	"ó", "o", "ò", "o", "ô", "o", "õ", "o", "ø", "o", "ơ", "o",
+	"ú", "u", "ù", "u", "û", "u", "ư", "u",
+	"ç", "c", "ñ", "n", "š", "s", "ž", "z", "ý", "y",
+	"Á", "a", "À", "a", "Â", "a", "Ã", "a", "Å", "a",
+	"É", "e", "È", "e", "Ê", "e", "Ë", "e",
+	"Í", "i", "Ì", "i", "Î", "i", "Ï", "i",
+	"Ó", "o", "Ò", "o", "Ô", "o", "Õ", "o", "Ø", "o",
+	"Ú", "u", "Ù", "u", "Û", "u",
+	"Ç", "c", "Ñ", "n", "Š", "s", "Ž", "z", "Ý", "y",
+	"æ", "ae", "Æ", "ae", "œ", "oe", "Œ", "oe",
+	"Ǝ", "e", "Ʌ", "a",
+	// Small-capital and modifier letters used decoratively.
+	"ᴀ", "a", "ʙ", "b", "ᴄ", "c", "ᴅ", "d", "ᴇ", "e", "ɢ", "g", "ʜ", "h",
+	"ɪ", "i", "ᴊ", "j", "ᴋ", "k", "ʟ", "l", "ᴍ", "m", "ɴ", "n", "ᴏ", "o",
+	"ᴘ", "p", "ʀ", "r", "ꜱ", "s", "ᴛ", "t", "ᴜ", "u", "ᴠ", "v", "ᴡ", "w",
+	"ʏ", "y", "ᴢ", "z",
+	"ᴬ", "a", "ᴮ", "b", "ᴰ", "d", "ᴱ", "e", "ᴳ", "g", "ᴴ", "h", "ᴵ", "i",
+	"ᴶ", "j", "ᴷ", "k", "ᴸ", "l", "ᴹ", "m", "ᴺ", "n", "ᴼ", "o", "ᴾ", "p",
+	"ᴿ", "r", "ᵀ", "t", "ᵁ", "u", "ⱽ", "v", "ᵂ", "w",
+	// Purely decorative glyphs carry no identity — drop them.
+	"ʚ", "", "ɞ", "", "ღ", "", "♡", "", "★", "", "☆", "", "✿", "", "❀", "",
+)
+
+// trimNamePrefix strips a leading article, but not when that "article" is
+// actually an initial: "A H Bee" must not normalize to "hbee", which is what
+// an unconditional TrimPrefix(name, "a ") did — silently, in every matcher.
+func trimNamePrefix(name string) string {
+	for _, p := range []string{"the ", "an ", "a "} {
+		if !strings.HasPrefix(name, p) {
+			continue
+		}
+		rest := name[len(p):]
+		// A one-character next token means this was an initial, not an article.
+		if i := strings.IndexByte(rest, ' '); i == 1 {
+			return name
+		}
+		return rest
+	}
+	return name
+}
+
 // Normalize name for matching (remove common prefixes, spaces, special chars)
 func normalizeName(name string) string {
 	name = strings.ToLower(name)
 	name = germanDiacriticReplacer.Replace(name)
+	// Fold look-alike scripts and decorative glyphs before anything compares
+	// these strings; see confusableFolder for why and for the collision check.
+	name = confusableFolder.Replace(name)
 	// Remove common prefixes
-	name = strings.TrimPrefix(name, "the ")
-	name = strings.TrimPrefix(name, "a ")
-	name = strings.TrimPrefix(name, "an ")
+	name = trimNamePrefix(name)
 	// Remove spaces and special characters
 	name = strings.ReplaceAll(name, " ", "")
 	name = strings.ReplaceAll(name, "_", "")

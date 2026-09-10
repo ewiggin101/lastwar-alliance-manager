@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
@@ -387,6 +388,56 @@ func TestIsVSUILabel_AllianceNameFromSettings(t *testing.T) {
 	for _, text := range negatives {
 		if isVSUILabel(text) {
 			t.Errorf("isVSUILabel(%q) = true, want false (real player name)", text)
+		}
+	}
+}
+
+// Player handles in Last War routinely mix Cyrillic, small-capital and
+// decorative glyphs into what reads as an ordinary Latin name. Before
+// confusableFolder, screenshot rows for those players matched no member at
+// all, and OCR that read a plain letter where the roster had an accented one
+// scored below the 70% fuzzy threshold and was discarded.
+func TestNormalizeName_FoldsConfusables(t *testing.T) {
+	tests := []struct{ stylized, plain string }{
+		{"ʚмаЯiаɞ", "Maria"},             // Cyrillic м/а/Я + decorative brackets
+		{"BŠP", "BSP"},                   // caron; previously scored 67%, below threshold
+		{"ᴸA LᴀKEя Gᴀʟ", "LA Laker Gal"}, // modifier + small-capital letters
+		{"Mïaaa", "Miaaa"},               // OCR-added diaeresis
+		{"ïïïXïïï", "iiiXiii"},           // same, repeated
+		{"Falcơn", "Falcon"},             // horn
+		{"Major Æshøl", "Major AEshol"},  // ligature + stroke
+		{"Taka Reisi Özgür", "Taka Reisi Ozgur"},
+		{"André França", "Andre Franca"},
+	}
+	for _, tt := range tests {
+		if got, want := normalizeName(tt.stylized), normalizeName(tt.plain); got != want {
+			t.Errorf("normalizeName(%q) = %q, want %q (from %q)", tt.stylized, got, want, tt.plain)
+		}
+	}
+}
+
+// CJK in these names is real content, not a Latin look-alike, so folding must
+// leave it intact.
+func TestNormalizeName_LeavesCJKIntact(t *testing.T) {
+	for _, name := range []string{"bong달달", "우리도리dani", "andymay 앤디메이"} {
+		got := normalizeName(name)
+		if !strings.ContainsAny(got, "달리도메이") {
+			t.Errorf("normalizeName(%q) = %q, dropped CJK content", name, got)
+		}
+	}
+}
+
+// A leading "A " is far more often an initial than an article. Stripping it
+// unconditionally turned "A H Bee" into "hbee" in every matcher LWM has.
+func TestNormalizeName_KeepsLeadingInitial(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"A H Bee", "ahbee"},
+		{"The Harley Special", "harleyspecial"}, // genuine article, still stripped
+		{"The Wolf", "wolf"},
+	}
+	for _, tt := range tests {
+		if got := normalizeName(tt.in); got != tt.want {
+			t.Errorf("normalizeName(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
