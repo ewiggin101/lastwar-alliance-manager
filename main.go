@@ -3001,6 +3001,44 @@ func getMemberStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+// findConfusableMember returns an existing active member whose name or nickname
+// normalizes to the same thing as the candidate, or "" if there is none.
+//
+// members has a UNIQUE index on the raw name, but that only stops byte-identical
+// duplicates. Players write the same handle several ways — "LA Laker Gal" and
+// "ᴸA LᴀKEя Gᴀʟ" are one person and share no code points — so the index let
+// both through, and the roster ended up with two records for one player. Only
+// one of them ever links to FarmOps, so screenshot rows and daily sync land on
+// different records and neither view is complete.
+//
+// normalizeName folds look-alike scripts (see confusableFolder), so comparing
+// normalized forms catches exactly the cases the index cannot.
+func findConfusableMember(name string, excludeID int) (string, error) {
+	target := normalizeName(name)
+	if target == "" {
+		return "", nil
+	}
+	rows, err := db.Query(`SELECT id, name, COALESCE(nickname, '') FROM members WHERE deleted_at IS NULL`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var existing, nickname string
+		if err := rows.Scan(&id, &existing, &nickname); err != nil {
+			return "", err
+		}
+		if id == excludeID {
+			continue
+		}
+		if normalizeName(existing) == target || (nickname != "" && normalizeName(nickname) == target) {
+			return existing, nil
+		}
+	}
+	return "", rows.Err()
+}
+
 // Create a new member
 func createMember(w http.ResponseWriter, r *http.Request) {
 	var input MemberInput
@@ -3022,6 +3060,19 @@ func createMember(w http.ResponseWriter, r *http.Request) {
 	var nicknameVal interface{}
 	if input.Nickname != nil && *input.Nickname != "" {
 		nicknameVal = *input.Nickname
+	}
+
+	// Reject a name that only differs from an existing member by look-alike
+	// glyphs; the UNIQUE index on the raw name cannot see those.
+	if existing, err := findConfusableMember(input.Name, 0); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if existing != "" {
+		http.Error(w, fmt.Sprintf(
+			"A member named %q already exists and appears to be the same player. "+
+				"Rename that member, or add this spelling as their nickname, "+
+				"rather than creating a second record.", existing), http.StatusConflict)
+		return
 	}
 
 	result, err := db.Exec("INSERT INTO members (name, nickname, rank, eligible, merit_eligible) VALUES (?, ?, ?, ?, ?)", input.Name, nicknameVal, input.Rank, eligible, meritEligible)
@@ -3081,6 +3132,20 @@ func updateMember(w http.ResponseWriter, r *http.Request) {
 	name := current.Name
 	if input.Name != "" {
 		name = input.Name
+	}
+
+	// A rename can collide with another member through look-alike glyphs just
+	// as a create can; excludeID keeps a member from colliding with itself.
+	if name != current.Name {
+		if existing, err := findConfusableMember(name, id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if existing != "" {
+			http.Error(w, fmt.Sprintf(
+				"A member named %q already exists and appears to be the same player. "+
+					"Merge them rather than keeping two records.", existing), http.StatusConflict)
+			return
+		}
 	}
 
 	rank := current.Rank
