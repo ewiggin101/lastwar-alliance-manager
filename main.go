@@ -10041,6 +10041,57 @@ func vsDayPatterns() []dayPattern {
 	}
 }
 
+// allianceNameTokens returns the configured alliance name split into
+// lowercase words, cached briefly so OCR row filtering does not hit the
+// database once per parsed row.
+//
+// The alliance name is rendered as "[tag] Name" on every ranking row, so
+// OCR routinely emits its words as bare phantom rows ("Club" from "Punch Up
+// Club"). Deriving the filter from the alliance_name setting means a new
+// alliance works without a code change — unlike the hardcoded names below,
+// which only ever covered whoever hit the problem first.
+var (
+	allianceTokensMu      sync.RWMutex
+	allianceTokensCache   []string
+	allianceTokensFetched time.Time
+)
+
+func allianceNameTokens() []string {
+	allianceTokensMu.RLock()
+	if time.Since(allianceTokensFetched) < time.Minute && allianceTokensCache != nil {
+		defer allianceTokensMu.RUnlock()
+		return allianceTokensCache
+	}
+	allianceTokensMu.RUnlock()
+
+	allianceTokensMu.Lock()
+	defer allianceTokensMu.Unlock()
+
+	var name string
+	if db != nil {
+		if err := db.QueryRow(`SELECT COALESCE(alliance_name, '') FROM settings WHERE id = 1`).Scan(&name); err != nil {
+			name = ""
+		}
+	}
+
+	tokens := []string{}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower != "" && lower != "last war: survival" {
+		// The full name as a phrase, plus each word: OCR may emit either.
+		tokens = append(tokens, lower)
+		for _, word := range strings.Fields(lower) {
+			word = strings.Trim(word, " .:-_|[]()")
+			if word != "" {
+				tokens = append(tokens, word)
+			}
+		}
+	}
+
+	allianceTokensCache = tokens
+	allianceTokensFetched = time.Now()
+	return tokens
+}
+
 // isVSUILabel returns true when text looks like a VS screenshot UI label
 // (header row, column title, day abbreviation, alliance name) rather than
 // a player name. Used to discard leaked header rows from OCR results.
@@ -10075,6 +10126,21 @@ func isVSUILabel(text string) bool {
 			return true
 		}
 	}
+
+	// Configured alliance name, matched exactly rather than as a substring:
+	// a player legitimately named "ClubKing" must not be discarded because
+	// the alliance is "Punch Up Club". Tokens of 4+ characters also accept a
+	// close OCR misread ("Cluhb" -> "Club" scores 80), which is why the
+	// hardcoded list above had to spell out "basozoku"/"besozoku" by hand.
+	for _, token := range allianceNameTokens() {
+		if normalized == token {
+			return true
+		}
+		if len(token) >= 4 && calculateSimilarity(normalized, token) >= 80 {
+			return true
+		}
+	}
+
 	return false
 }
 
