@@ -441,3 +441,41 @@ func TestNormalizeName_KeepsLeadingInitial(t *testing.T) {
 		}
 	}
 }
+
+// Real pairs from the FarmOps export vs the local roster. FarmOps reads names
+// out of the game, so its spelling is authoritative; these differ from the
+// local record only by look-alike glyphs and must fold together. Pairs that
+// differ by actual characters ("Sparky1"/"Sporky1", "Yatttxx"/"Yattxx") are
+// deliberately absent — no normalisation should bridge those, and a rename is
+// the correct repair.
+func TestNormalizeName_FoldsFarmOpsVariants(t *testing.T) {
+	tests := []struct{ local, farmops string }{
+		{"AROZ", "AR0Z"},           // letter O vs digit zero
+		{"ZeRoCoOL", "ZeRoCo0L"},   // same, mid-name
+		{"BŠP", "BŚP"},             // caron vs acute
+		{"Kaido 카이도", "Kāido 카이도"}, // macron, Hangul preserved
+		{"Y A S O", "ＹＡＳＯ"},        // fullwidth, spaces stripped
+	}
+	for _, tt := range tests {
+		if got, want := normalizeName(tt.local), normalizeName(tt.farmops); got != want {
+			t.Errorf("normalizeName(%q) = %q, want %q (from %q)", tt.local, got, want, tt.farmops)
+		}
+	}
+}
+
+// The opposite guarantee: names that genuinely differ must NOT fold together,
+// or the sync would link a member to the wrong player.
+func TestNormalizeName_KeepsGenuineDifferences(t *testing.T) {
+	tests := [][2]string{
+		{"Sparky1", "Sporky1"},
+		{"Yatttxx", "Yattxx"},
+		{"Baldy676767", "Baldy67676767"},
+		{"CHIEFUNIVERSE", "CHIEF1UNIVERSE"},
+		{"누비동PpoB", "누비똥PPoB"},
+	}
+	for _, tt := range tests {
+		if normalizeName(tt[0]) == normalizeName(tt[1]) {
+			t.Errorf("normalizeName folded %q and %q together; they are different players", tt[0], tt[1])
+		}
+	}
+}

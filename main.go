@@ -10117,6 +10117,28 @@ var confusableFolder = strings.NewReplacer(
 	"ᴬ", "a", "ᴮ", "b", "ᴰ", "d", "ᴱ", "e", "ᴳ", "g", "ᴴ", "h", "ᴵ", "i",
 	"ᴶ", "j", "ᴷ", "k", "ᴸ", "l", "ᴹ", "m", "ᴺ", "n", "ᴼ", "o", "ᴾ", "p",
 	"ᴿ", "r", "ᵀ", "t", "ᵁ", "u", "ⱽ", "v", "ᵂ", "w",
+	// Latin letters with accents the base set missed.
+	"ś", "s", "Ś", "s", "ć", "c", "Ć", "c", "ź", "z", "Ź", "z",
+	"ń", "n", "Ń", "n", "ł", "l", "Ł", "l", "ę", "e", "Ę", "e",
+	"ą", "a", "Ą", "a", "ů", "u", "Ů", "u",
+	// Macrons.
+	"ā", "a", "Ā", "a", "ē", "e", "Ē", "e", "ī", "i", "Ī", "i",
+	"ō", "o", "Ō", "o", "ū", "u", "Ū", "u",
+	// IPA letters that appear in stylised handles.
+	"ʊ", "u",
+	// Fullwidth forms: "ＹＡＳＯ" and "Y A S O" are one player.
+	"Ａ", "A", "Ｂ", "B", "Ｃ", "C", "Ｄ", "D", "Ｅ", "E", "Ｆ", "F", "Ｇ", "G", "Ｈ", "H",
+	"Ｉ", "I", "Ｊ", "J", "Ｋ", "K", "Ｌ", "L", "Ｍ", "M", "Ｎ", "N", "Ｏ", "O", "Ｐ", "P",
+	"Ｑ", "Q", "Ｒ", "R", "Ｓ", "S", "Ｔ", "T", "Ｕ", "U", "Ｖ", "V", "Ｗ", "W", "Ｘ", "X",
+	"Ｙ", "Y", "Ｚ", "Z", "ａ", "a", "ｂ", "b", "ｃ", "c", "ｄ", "d", "ｅ", "e", "ｆ", "f",
+	"ｇ", "g", "ｈ", "h", "ｉ", "i", "ｊ", "j", "ｋ", "k", "ｌ", "l", "ｍ", "m", "ｎ", "n",
+	"ｏ", "o", "ｐ", "p", "ｑ", "q", "ｒ", "r", "ｓ", "s", "ｔ", "t", "ｕ", "u", "ｖ", "v",
+	"ｗ", "w", "ｘ", "x", "ｙ", "y", "ｚ", "z", "０", "0", "１", "1", "２", "2", "３", "3",
+	"４", "4", "５", "5", "６", "6", "７", "7", "８", "8", "９", "9",
+	// Digit zero stands in for the letter O often enough that the two must
+	// fold together ("ZeRoCo0L" / "ZeRoCoOL", "AR0Z" / "AROZ"). Verified
+	// against the live roster: no two members collide under this.
+	"0", "o",
 	// Purely decorative glyphs carry no identity — drop them.
 	"ʚ", "", "ɞ", "", "ღ", "", "♡", "", "★", "", "☆", "", "✿", "", "❀", "",
 )
