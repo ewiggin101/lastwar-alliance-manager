@@ -322,11 +322,24 @@ type ConfirmRequest struct {
 	Renames         []RenameInfo     `json:"renames"`
 }
 
+// PossibleDuplicate flags an incoming name that was NOT imported because it
+// normalizes to the same thing as an existing member. Bulk imports must not
+// abort on one bad row, but silently dropping a name is how a player quietly
+// goes missing from a whole week of scores — so each one is reported for a
+// human to resolve.
+type PossibleDuplicate struct {
+	Name    string `json:"name"`    // the name in the import
+	Matches string `json:"matches"` // the existing member it resembles
+}
+
 type ConfirmResult struct {
 	Added     int `json:"added"`
 	Updated   int `json:"updated"`
 	Unchanged int `json:"unchanged"`
 	Removed   int `json:"removed"`
+	// Names skipped as probable duplicates; needs a human decision (rename the
+	// existing member, add this spelling as their nickname, or import anyway).
+	NeedsReview []PossibleDuplicate `json:"needs_review,omitempty"`
 }
 
 type VSPoints struct {
@@ -3001,6 +3014,44 @@ func getMemberStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+// findConfusableMember returns an existing active member whose name or nickname
+// normalizes to the same thing as the candidate, or "" if there is none.
+//
+// members has a UNIQUE index on the raw name, but that only stops byte-identical
+// duplicates. Players write the same handle several ways — "LA Laker Gal" and
+// "ᴸA LᴀKEя Gᴀʟ" are one person and share no code points — so the index let
+// both through, and the roster ended up with two records for one player. Only
+// one of them ever links to FarmOps, so screenshot rows and daily sync land on
+// different records and neither view is complete.
+//
+// normalizeName folds look-alike scripts (see confusableFolder), so comparing
+// normalized forms catches exactly the cases the index cannot.
+func findConfusableMember(name string, excludeID int) (string, error) {
+	target := normalizeName(name)
+	if target == "" {
+		return "", nil
+	}
+	rows, err := db.Query(`SELECT id, name, COALESCE(nickname, '') FROM members WHERE deleted_at IS NULL`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var existing, nickname string
+		if err := rows.Scan(&id, &existing, &nickname); err != nil {
+			return "", err
+		}
+		if id == excludeID {
+			continue
+		}
+		if normalizeName(existing) == target || (nickname != "" && normalizeName(nickname) == target) {
+			return existing, nil
+		}
+	}
+	return "", rows.Err()
+}
+
 // Create a new member
 func createMember(w http.ResponseWriter, r *http.Request) {
 	var input MemberInput
@@ -3022,6 +3073,19 @@ func createMember(w http.ResponseWriter, r *http.Request) {
 	var nicknameVal interface{}
 	if input.Nickname != nil && *input.Nickname != "" {
 		nicknameVal = *input.Nickname
+	}
+
+	// Reject a name that only differs from an existing member by look-alike
+	// glyphs; the UNIQUE index on the raw name cannot see those.
+	if existing, err := findConfusableMember(input.Name, 0); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if existing != "" {
+		http.Error(w, fmt.Sprintf(
+			"A member named %q already exists and appears to be the same player. "+
+				"Rename that member, or add this spelling as their nickname, "+
+				"rather than creating a second record.", existing), http.StatusConflict)
+		return
 	}
 
 	result, err := db.Exec("INSERT INTO members (name, nickname, rank, eligible, merit_eligible) VALUES (?, ?, ?, ?, ?)", input.Name, nicknameVal, input.Rank, eligible, meritEligible)
@@ -3081,6 +3145,20 @@ func updateMember(w http.ResponseWriter, r *http.Request) {
 	name := current.Name
 	if input.Name != "" {
 		name = input.Name
+	}
+
+	// A rename can collide with another member through look-alike glyphs just
+	// as a create can; excludeID keeps a member from colliding with itself.
+	if name != current.Name {
+		if existing, err := findConfusableMember(name, id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if existing != "" {
+			http.Error(w, fmt.Sprintf(
+				"A member named %q already exists and appears to be the same player. "+
+					"Merge them rather than keeping two records.", existing), http.StatusConflict)
+			return
+		}
 	}
 
 	rank := current.Rank
@@ -7411,6 +7489,7 @@ func autoRegisterMembers(w http.ResponseWriter, r *http.Request) {
 
 	added := []string{}
 	skipped := []string{}
+	needsReview := []PossibleDuplicate{}
 
 	for _, name := range req.Names {
 		name = strings.TrimSpace(name)
@@ -7424,6 +7503,14 @@ func autoRegisterMembers(w http.ResponseWriter, r *http.Request) {
 			skipped = append(skipped, name)
 			continue
 		}
+		// The exact check above misses a name that differs only by look-alike
+		// glyphs. Skip it rather than creating a second record for one player,
+		// but report it — this is a judgement call, not a no-op.
+		if match, err := findConfusableMember(name, 0); err == nil && match != "" {
+			log.Printf("autoRegisterMembers: %q looks like existing member %q, not registered", name, match) // #nosec G706 -- %q prevents log injection
+			needsReview = append(needsReview, PossibleDuplicate{Name: name, Matches: match})
+			continue
+		}
 		_, err = db.Exec("INSERT INTO members (name, rank, eligible) VALUES (?, 'R1', 1)", name)
 		if err != nil {
 			log.Printf("autoRegisterMembers: failed to insert %q: %v", name, err)
@@ -7434,10 +7521,15 @@ func autoRegisterMembers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	message := fmt.Sprintf("Registered %d new member(s) as R1", len(added))
+	if len(needsReview) > 0 {
+		message += fmt.Sprintf("; %d name(s) look like existing members and need review", len(needsReview))
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"added":   added,
-		"skipped": skipped,
-		"message": fmt.Sprintf("Registered %d new member(s) as R1", len(added)),
+		"added":        added,
+		"skipped":      skipped,
+		"needs_review": needsReview,
+		"message":      message,
 	})
 }
 
@@ -7475,6 +7567,14 @@ func confirmMemberUpdates(w http.ResponseWriter, r *http.Request) {
 		err := db.QueryRow("SELECT id, rank FROM members WHERE name = ? AND deleted_at IS NULL", member.Name).Scan(&existingID, &existingRank)
 
 		if err == sql.ErrNoRows {
+			// No exact match, but the name may differ from an existing member
+			// only by look-alike glyphs. Import the rest of the batch and flag
+			// this one rather than creating a duplicate record.
+			if match, mErr := findConfusableMember(member.Name, 0); mErr == nil && match != "" {
+				log.Printf("confirmMemberUpdates: %q looks like existing member %q, not added", member.Name, match) // #nosec G706 -- %q prevents log injection
+				result.NeedsReview = append(result.NeedsReview, PossibleDuplicate{Name: member.Name, Matches: match})
+				continue
+			}
 			// Add new member
 			_, err = db.Exec("INSERT INTO members (name, rank) VALUES (?, ?)", member.Name, member.Rank)
 			if err != nil {
@@ -9968,14 +10068,86 @@ var germanDiacriticReplacer = strings.NewReplacer(
 	"Ä", "a", "Ö", "o", "Ü", "u",
 )
 
+// confusableFolder maps visually-identical glyphs onto plain Latin, so a name
+// written with Cyrillic or decorative characters matches the same name typed
+// normally.
+//
+// Last War handles routinely mix scripts for style: "ʚмаЯiаɞ" reads as "Maria"
+// but is Cyrillic м/а/Я spliced with Latin i and two decorative brackets, and
+// shares almost no code points with it. Without folding, neither exact nor
+// fuzzy matching can connect the two — screenshot rows for those players
+// matched nothing at all, and OCR that guesses a plain "i" where the roster has
+// "ï" fell below the 70% similarity threshold and was discarded.
+//
+// Folding is applied to BOTH sides of every comparison (see normalizeName), so
+// it only ever makes matching more permissive. It was validated against the
+// live 101-member roster: exactly one pair collided, and that pair was a
+// genuine duplicate of one player ("LA Laker Gal" / "ᴸA LᴀKEя Gᴀʟ"). Re-run
+// that check before widening this map — a collision silently credits the wrong
+// member, which is worse than no match at all.
+//
+// CJK is deliberately absent: Hangul and kana in these names are real content,
+// not lookalikes for Latin letters.
+var confusableFolder = strings.NewReplacer(
+	// Cyrillic letters that render as Latin.
+	"а", "a", "е", "e", "о", "o", "р", "p", "с", "c", "у", "y", "х", "x",
+	"і", "i", "ѕ", "s", "ј", "j", "м", "m", "я", "r", "к", "k", "т", "t",
+	"А", "a", "В", "b", "Е", "e", "К", "k", "М", "m", "Н", "h", "О", "o",
+	"Р", "p", "С", "c", "Т", "t", "Х", "x", "Я", "r",
+	// Latin letters carrying diacritics or strokes.
+	"á", "a", "à", "a", "â", "a", "ã", "a", "å", "a",
+	"é", "e", "è", "e", "ê", "e", "ë", "e",
+	"í", "i", "ì", "i", "î", "i", "ï", "i",
+	"ó", "o", "ò", "o", "ô", "o", "õ", "o", "ø", "o", "ơ", "o",
+	"ú", "u", "ù", "u", "û", "u", "ư", "u",
+	"ç", "c", "ñ", "n", "š", "s", "ž", "z", "ý", "y",
+	"Á", "a", "À", "a", "Â", "a", "Ã", "a", "Å", "a",
+	"É", "e", "È", "e", "Ê", "e", "Ë", "e",
+	"Í", "i", "Ì", "i", "Î", "i", "Ï", "i",
+	"Ó", "o", "Ò", "o", "Ô", "o", "Õ", "o", "Ø", "o",
+	"Ú", "u", "Ù", "u", "Û", "u",
+	"Ç", "c", "Ñ", "n", "Š", "s", "Ž", "z", "Ý", "y",
+	"æ", "ae", "Æ", "ae", "œ", "oe", "Œ", "oe",
+	"Ǝ", "e", "Ʌ", "a",
+	// Small-capital and modifier letters used decoratively.
+	"ᴀ", "a", "ʙ", "b", "ᴄ", "c", "ᴅ", "d", "ᴇ", "e", "ɢ", "g", "ʜ", "h",
+	"ɪ", "i", "ᴊ", "j", "ᴋ", "k", "ʟ", "l", "ᴍ", "m", "ɴ", "n", "ᴏ", "o",
+	"ᴘ", "p", "ʀ", "r", "ꜱ", "s", "ᴛ", "t", "ᴜ", "u", "ᴠ", "v", "ᴡ", "w",
+	"ʏ", "y", "ᴢ", "z",
+	"ᴬ", "a", "ᴮ", "b", "ᴰ", "d", "ᴱ", "e", "ᴳ", "g", "ᴴ", "h", "ᴵ", "i",
+	"ᴶ", "j", "ᴷ", "k", "ᴸ", "l", "ᴹ", "m", "ᴺ", "n", "ᴼ", "o", "ᴾ", "p",
+	"ᴿ", "r", "ᵀ", "t", "ᵁ", "u", "ⱽ", "v", "ᵂ", "w",
+	// Purely decorative glyphs carry no identity — drop them.
+	"ʚ", "", "ɞ", "", "ღ", "", "♡", "", "★", "", "☆", "", "✿", "", "❀", "",
+)
+
+// trimNamePrefix strips a leading article, but not when that "article" is
+// actually an initial: "A H Bee" must not normalize to "hbee", which is what
+// an unconditional TrimPrefix(name, "a ") did — silently, in every matcher.
+func trimNamePrefix(name string) string {
+	for _, p := range []string{"the ", "an ", "a "} {
+		if !strings.HasPrefix(name, p) {
+			continue
+		}
+		rest := name[len(p):]
+		// A one-character next token means this was an initial, not an article.
+		if i := strings.IndexByte(rest, ' '); i == 1 {
+			return name
+		}
+		return rest
+	}
+	return name
+}
+
 // Normalize name for matching (remove common prefixes, spaces, special chars)
 func normalizeName(name string) string {
 	name = strings.ToLower(name)
 	name = germanDiacriticReplacer.Replace(name)
+	// Fold look-alike scripts and decorative glyphs before anything compares
+	// these strings; see confusableFolder for why and for the collision check.
+	name = confusableFolder.Replace(name)
 	// Remove common prefixes
-	name = strings.TrimPrefix(name, "the ")
-	name = strings.TrimPrefix(name, "a ")
-	name = strings.TrimPrefix(name, "an ")
+	name = trimNamePrefix(name)
 	// Remove spaces and special characters
 	name = strings.ReplaceAll(name, " ", "")
 	name = strings.ReplaceAll(name, "_", "")
@@ -10041,6 +10213,57 @@ func vsDayPatterns() []dayPattern {
 	}
 }
 
+// allianceNameTokens returns the configured alliance name split into
+// lowercase words, cached briefly so OCR row filtering does not hit the
+// database once per parsed row.
+//
+// The alliance name is rendered as "[tag] Name" on every ranking row, so
+// OCR routinely emits its words as bare phantom rows ("Club" from "Punch Up
+// Club"). Deriving the filter from the alliance_name setting means a new
+// alliance works without a code change — unlike the hardcoded names below,
+// which only ever covered whoever hit the problem first.
+var (
+	allianceTokensMu      sync.RWMutex
+	allianceTokensCache   []string
+	allianceTokensFetched time.Time
+)
+
+func allianceNameTokens() []string {
+	allianceTokensMu.RLock()
+	if time.Since(allianceTokensFetched) < time.Minute && allianceTokensCache != nil {
+		defer allianceTokensMu.RUnlock()
+		return allianceTokensCache
+	}
+	allianceTokensMu.RUnlock()
+
+	allianceTokensMu.Lock()
+	defer allianceTokensMu.Unlock()
+
+	var name string
+	if db != nil {
+		if err := db.QueryRow(`SELECT COALESCE(alliance_name, '') FROM settings WHERE id = 1`).Scan(&name); err != nil {
+			name = ""
+		}
+	}
+
+	tokens := []string{}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower != "" && lower != "last war: survival" {
+		// The full name as a phrase, plus each word: OCR may emit either.
+		tokens = append(tokens, lower)
+		for _, word := range strings.Fields(lower) {
+			word = strings.Trim(word, " .:-_|[]()")
+			if word != "" {
+				tokens = append(tokens, word)
+			}
+		}
+	}
+
+	allianceTokensCache = tokens
+	allianceTokensFetched = time.Now()
+	return tokens
+}
+
 // isVSUILabel returns true when text looks like a VS screenshot UI label
 // (header row, column title, day abbreviation, alliance name) rather than
 // a player name. Used to discard leaked header rows from OCR results.
@@ -10075,6 +10298,21 @@ func isVSUILabel(text string) bool {
 			return true
 		}
 	}
+
+	// Configured alliance name, matched exactly rather than as a substring:
+	// a player legitimately named "ClubKing" must not be discarded because
+	// the alliance is "Punch Up Club". Tokens of 4+ characters also accept a
+	// close OCR misread ("Cluhb" -> "Club" scores 80), which is why the
+	// hardcoded list above had to spell out "basozoku"/"besozoku" by hand.
+	for _, token := range allianceNameTokens() {
+		if normalized == token {
+			return true
+		}
+		if len(token) >= 4 && calculateSimilarity(normalized, token) >= 80 {
+			return true
+		}
+	}
+
 	return false
 }
 

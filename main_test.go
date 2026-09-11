@@ -1,7 +1,10 @@
 package main
 
 import (
+	"database/sql"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParsePlayerTag_FuzzyClosingBracket(t *testing.T) {
@@ -336,5 +339,105 @@ func TestMergeVSRecordsByName_AddsNew(t *testing.T) {
 	}
 	if result[1].Confidence != "review" {
 		t.Errorf("supplemental confidence = %q, want review", result[1].Confidence)
+	}
+}
+
+// TestIsVSUILabel_AllianceNameFromSettings covers the phantom-row case seen in
+// production: the configured alliance name ("Punch Up Club") leaks out of OCR
+// as a bare "Club" row on nearly every screenshot, and as "Cluhb" when the
+// glyphs are misread. Both must be discarded, while a real player whose name
+// merely contains an alliance word must survive.
+func TestIsVSUILabel_AllianceNameFromSettings(t *testing.T) {
+	testDB, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	defer testDB.Close()
+
+	if _, err := testDB.Exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY, alliance_name TEXT)`); err != nil {
+		t.Fatalf("create settings: %v", err)
+	}
+	if _, err := testDB.Exec(`INSERT INTO settings (id, alliance_name) VALUES (1, 'Punch Up Club')`); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	origDB := db
+	db = testDB
+	defer func() {
+		db = origDB
+		allianceTokensMu.Lock()
+		allianceTokensCache, allianceTokensFetched = nil, time.Time{}
+		allianceTokensMu.Unlock()
+	}()
+
+	// Force a cache refresh so this test does not read a value cached by
+	// another test (or by a nil-db call earlier in the run).
+	allianceTokensMu.Lock()
+	allianceTokensCache, allianceTokensFetched = nil, time.Time{}
+	allianceTokensMu.Unlock()
+
+	positives := []string{"Club", "club", "Punch", "Punch Up Club", "Cluhb"}
+	for _, text := range positives {
+		if !isVSUILabel(text) {
+			t.Errorf("isVSUILabel(%q) = false, want true (alliance name leak)", text)
+		}
+	}
+
+	// Substring matching would wrongly reject these; exact + fuzzy must not.
+	negatives := []string{"ClubKing", "Clubber", "Gargoland", "Clue"}
+	for _, text := range negatives {
+		if isVSUILabel(text) {
+			t.Errorf("isVSUILabel(%q) = true, want false (real player name)", text)
+		}
+	}
+}
+
+// Player handles in Last War routinely mix Cyrillic, small-capital and
+// decorative glyphs into what reads as an ordinary Latin name. Before
+// confusableFolder, screenshot rows for those players matched no member at
+// all, and OCR that read a plain letter where the roster had an accented one
+// scored below the 70% fuzzy threshold and was discarded.
+func TestNormalizeName_FoldsConfusables(t *testing.T) {
+	tests := []struct{ stylized, plain string }{
+		{"ʚмаЯiаɞ", "Maria"},             // Cyrillic м/а/Я + decorative brackets
+		{"BŠP", "BSP"},                   // caron; previously scored 67%, below threshold
+		{"ᴸA LᴀKEя Gᴀʟ", "LA Laker Gal"}, // modifier + small-capital letters
+		{"Mïaaa", "Miaaa"},               // OCR-added diaeresis
+		{"ïïïXïïï", "iiiXiii"},           // same, repeated
+		{"Falcơn", "Falcon"},             // horn
+		{"Major Æshøl", "Major AEshol"},  // ligature + stroke
+		{"Taka Reisi Özgür", "Taka Reisi Ozgur"},
+		{"André França", "Andre Franca"},
+	}
+	for _, tt := range tests {
+		if got, want := normalizeName(tt.stylized), normalizeName(tt.plain); got != want {
+			t.Errorf("normalizeName(%q) = %q, want %q (from %q)", tt.stylized, got, want, tt.plain)
+		}
+	}
+}
+
+// CJK in these names is real content, not a Latin look-alike, so folding must
+// leave it intact.
+func TestNormalizeName_LeavesCJKIntact(t *testing.T) {
+	for _, name := range []string{"bong달달", "우리도리dani", "andymay 앤디메이"} {
+		got := normalizeName(name)
+		if !strings.ContainsAny(got, "달리도메이") {
+			t.Errorf("normalizeName(%q) = %q, dropped CJK content", name, got)
+		}
+	}
+}
+
+// A leading "A " is far more often an initial than an article. Stripping it
+// unconditionally turned "A H Bee" into "hbee" in every matcher LWM has.
+func TestNormalizeName_KeepsLeadingInitial(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"A H Bee", "ahbee"},
+		{"The Harley Special", "harleyspecial"}, // genuine article, still stripped
+		{"The Wolf", "wolf"},
+	}
+	for _, tt := range tests {
+		if got := normalizeName(tt.in); got != tt.want {
+			t.Errorf("normalizeName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
