@@ -90,6 +90,12 @@ type farmOpsSyncResult struct {
 	MembersLinked    int      `json:"members_linked"`
 	MembersUnmatched int      `json:"members_unmatched"`
 	Unmatched        []string `json:"unmatched"`
+	// UnmatchedFarmOps lists members present in the FarmOps export that no
+	// local member matched. Pair these against Unmatched to see what a local
+	// member should be renamed to: FarmOps reads the roster out of the game,
+	// so its spelling is the authoritative one. Without this the result said
+	// which members were stranded but never what to call them instead.
+	UnmatchedFarmOps []string `json:"unmatched_farmops"`
 	SnapshotUpdates  int      `json:"snapshot_updates"`
 	PowerRows        int      `json:"power_rows_inserted"`
 	KillRows         int      `json:"kill_rows_inserted"`
@@ -228,10 +234,11 @@ func runFarmOpsSync(ctx context.Context) (*farmOpsSyncResult, error) {
 	}
 
 	res := &farmOpsSyncResult{
-		Source:     "lastwar.farm",
-		Alliance:   export.Data.Alliance.Name,
-		ExportedAt: export.Data.ExportedAt,
-		Unmatched:  []string{},
+		Source:           "lastwar.farm",
+		Alliance:         export.Data.Alliance.Name,
+		ExportedAt:       export.Data.ExportedAt,
+		Unmatched:        []string{},
+		UnmatchedFarmOps: []string{},
 	}
 
 	fopsByUID := make(map[string]farmOpsExportMember, len(export.Data.Members))
@@ -362,6 +369,15 @@ func runFarmOpsSync(ctx context.Context) (*farmOpsSyncResult, error) {
 	res.DonationWeeks = weeks
 	res.DonationRows = donationRows
 
+	// Whatever the export offered that nothing claimed. Sorted so the list is
+	// stable between runs and diffable.
+	for _, m := range export.Data.Members {
+		if _, linked := linkTo[m.ID]; !linked {
+			res.UnmatchedFarmOps = append(res.UnmatchedFarmOps, m.Name)
+		}
+	}
+	sort.Strings(res.UnmatchedFarmOps)
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -369,6 +385,14 @@ func runFarmOpsSync(ctx context.Context) (*farmOpsSyncResult, error) {
 	log.Printf("FarmOps sync: alliance=%q matched=%d linked=%d unmatched=%d power+%d kill+%d thp+%d donations=%d %v",
 		res.Alliance, res.MembersMatched, res.MembersLinked, res.MembersUnmatched,
 		res.PowerRows, res.KillRows, res.ThpRows, res.DonationRows, res.DonationWeeks)
+
+	// Log both sides of the mismatch. A stranded local member is only half the
+	// story — without the export's spelling there is nothing to rename it to,
+	// and the sync endpoint needs R4/R5, so the log is the accessible copy.
+	if len(res.Unmatched) > 0 || len(res.UnmatchedFarmOps) > 0 {
+		log.Printf("FarmOps sync: unmatched local=%v", res.Unmatched)          // #nosec G706 -- %v of a []string built from the local DB
+		log.Printf("FarmOps sync: unmatched farmops=%v", res.UnmatchedFarmOps) // #nosec G706 -- %v of a []string from the export
+	}
 	return res, nil
 }
 
