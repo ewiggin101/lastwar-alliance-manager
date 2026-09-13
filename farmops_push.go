@@ -37,9 +37,11 @@ import (
 // credential per consumer, and a leaked read key cannot alter FarmOps data.
 
 const (
-	farmOpsDuelsURL       = "https://www.lastwar.farm/api/v1/alliance/members/duels"
-	farmOpsStormScoresURL = "https://www.lastwar.farm/api/v1/alliance/storms/scores"
-	farmOpsPushTimeout    = 30 * time.Second
+	farmOpsDuelsURL            = "https://www.lastwar.farm/api/v1/alliance/members/duels"
+	farmOpsStormsURL           = "https://www.lastwar.farm/api/v1/alliance/storms"
+	farmOpsStormAssignmentsURL = "https://www.lastwar.farm/api/v1/alliance/storms/assignments"
+	farmOpsStormScoresURL      = "https://www.lastwar.farm/api/v1/alliance/storms/scores"
+	farmOpsPushTimeout         = 30 * time.Second
 )
 
 // farmOpsEntry is the shape every FarmOps import endpoint takes.
@@ -49,13 +51,39 @@ type farmOpsEntry struct {
 	Score    int64  `json:"score"`
 }
 
+// farmOpsImportSummary is what every FarmOps import endpoint returns.
+type farmOpsImportSummary struct {
+	Data struct {
+		MatchedCount   int      `json:"matchedCount"`
+		UnmatchedCount int      `json:"unmatchedCount"`
+		Unmatched      []string `json:"unmatched"`
+		UnknownIDs     []string `json:"unknownIds"`
+	} `json:"data"`
+}
+
 type farmOpsPushResult struct {
-	Endpoint string `json:"endpoint"`
-	Sent     int    `json:"sent"`
-	ByID     int    `json:"by_id"`
-	ByName   int    `json:"by_name"`
-	Status   int    `json:"status"`
-	Summary  string `json:"summary"`
+	Endpoint     string   `json:"endpoint"`
+	Sent         int      `json:"sent"`
+	ByID         int      `json:"by_id"`
+	ByName       int      `json:"by_name"`
+	Status       int      `json:"status"`
+	Matched      int      `json:"matched"`
+	Unmatched    []string `json:"unmatched,omitempty"`
+	UnknownIDs   []string `json:"unknown_ids,omitempty"`
+	CreatedEvent bool     `json:"created_event,omitempty"`
+	Summary      string   `json:"summary"`
+}
+
+// applySummary folds FarmOps' response into the result and reports the
+// names it could not place — those are the ones a human needs to look at.
+func (r *farmOpsPushResult) applySummary(raw string) {
+	r.Summary = raw
+	var sum farmOpsImportSummary
+	if json.Unmarshal([]byte(raw), &sum) == nil {
+		r.Matched = sum.Data.MatchedCount
+		r.Unmatched = sum.Data.Unmatched
+		r.UnknownIDs = sum.Data.UnknownIDs
+	}
 }
 
 func farmOpsWriteKey() string {
@@ -91,6 +119,59 @@ func farmOpsPost(ctx context.Context, url string, payload any) (int, string, err
 		return resp.StatusCode, text, fmt.Errorf("lastwar.farm returned HTTP %d: %s", resp.StatusCode, text)
 	}
 	return resp.StatusCode, text, nil
+}
+
+func farmOpsGet(ctx context.Context, url string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+farmOpsWriteKey())
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "lastwar-alliance-manager/1.0")
+	resp, err := (&http.Client{Timeout: farmOpsPushTimeout}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("lastwar.farm returned HTTP %d", resp.StatusCode)
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out)
+}
+
+// farmOpsStormExists reports whether FarmOps already has an event of this
+// type on this date — i.e. someone planned it there, with real team
+// assignments that a push must not overwrite.
+func farmOpsStormExists(ctx context.Context, stormType, eventDate string) (bool, error) {
+	var raw json.RawMessage
+	if err := farmOpsGet(ctx, farmOpsStormsURL, &raw); err != nil {
+		return false, err
+	}
+	var events []struct {
+		Type      string `json:"type"`
+		EventDate string `json:"eventDate"`
+	}
+	// The list endpoint has answered both as a bare array and wrapped in
+	// {"data": [...]}; accept either.
+	if json.Unmarshal(raw, &events) != nil {
+		var wrapped struct {
+			Data []struct {
+				Type      string `json:"type"`
+				EventDate string `json:"eventDate"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &wrapped); err != nil {
+			return false, fmt.Errorf("unexpected storms list shape: %w", err)
+		}
+		events = wrapped.Data
+	}
+	for _, e := range events {
+		if strings.EqualFold(e.Type, stormType) && e.EventDate == eventDate {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // farmOpsEntryFor builds one entry, preferring the exact id.
@@ -171,12 +252,14 @@ func farmOpsPushDuels(ctx context.Context, weekDate, day string) (*farmOpsPushRe
 	}
 
 	res.Sent = len(entries)
-	res.Status, res.Summary, err = farmOpsPost(ctx, farmOpsDuelsURL, map[string]any{
+	var body string
+	res.Status, body, err = farmOpsPost(ctx, farmOpsDuelsURL, map[string]any{
 		"scoredOn": scoredOn,
 		"entries":  entries,
 	})
-	log.Printf("FarmOps push: duels %s (%s %s) sent=%d by_id=%d by_name=%d status=%d %s",
-		scoredOn, weekDate, day, res.Sent, res.ByID, res.ByName, res.Status, truncateForLog(res.Summary, 200)) // #nosec G706 -- fields are our own ints and a bounded, quoted response snippet
+	res.applySummary(body)
+	log.Printf("FarmOps push: duels %s (%s %s) sent=%d by_id=%d by_name=%d status=%d matched=%d unmatched=%v",
+		scoredOn, weekDate, day, res.Sent, res.ByID, res.ByName, res.Status, res.Matched, res.Unmatched) // #nosec G706 -- our own ints, a validated date/day, and a parsed []string of names
 	return res, err
 }
 
@@ -227,13 +310,52 @@ func farmOpsPushStormScores(ctx context.Context, eventID int) (*farmOpsPushResul
 	}
 
 	res.Sent = len(entries)
-	res.Status, res.Summary, err = farmOpsPost(ctx, farmOpsStormScoresURL, map[string]any{
-		"stormType": "DESERT",
-		"eventDate": eventDate,
-		"entries":   entries,
+
+	// Scores can only attach to an existing event ("Import assignments
+	// first", per the API). If the storm was planned in FarmOps the event
+	// and its real team assignments already exist and must be left alone.
+	// If not, create it from the participants: everyone with a score played,
+	// so STARTER is accurate; the team is unknown to LWM, so all go to A and
+	// the same default is passed to scores for consistency.
+	exists, err := farmOpsStormExists(ctx, "DESERT", eventDate)
+	if err != nil {
+		return res, fmt.Errorf("checking for existing storm event: %w", err)
+	}
+	if !exists {
+		type assignment struct {
+			MemberID string `json:"memberId,omitempty"`
+			Name     string `json:"name,omitempty"`
+			Team     string `json:"team"`
+			Role     string `json:"role"`
+		}
+		roster := make([]assignment, 0, len(entries))
+		for _, e := range entries {
+			roster = append(roster, assignment{MemberID: e.MemberID, Name: e.Name, Team: "A", Role: "STARTER"})
+		}
+		status, body, err := farmOpsPost(ctx, farmOpsStormAssignmentsURL, map[string]any{
+			"stormType": "DESERT",
+			"eventDate": eventDate,
+			"entries":   roster,
+		})
+		if err != nil {
+			res.Status = status
+			res.Summary = body
+			return res, fmt.Errorf("creating storm event: %w", err)
+		}
+		res.CreatedEvent = true
+		log.Printf("FarmOps push: created DESERT %s roster from %d participant(s)", eventDate, len(roster)) // #nosec G706 -- validated date and an int
+	}
+
+	var body string
+	res.Status, body, err = farmOpsPost(ctx, farmOpsStormScoresURL, map[string]any{
+		"stormType":   "DESERT",
+		"eventDate":   eventDate,
+		"defaultTeam": "A",
+		"entries":     entries,
 	})
-	log.Printf("FarmOps push: storms/scores DESERT %s (event %d) sent=%d by_id=%d by_name=%d status=%d %s",
-		eventDate, eventID, res.Sent, res.ByID, res.ByName, res.Status, truncateForLog(res.Summary, 200)) // #nosec G706 -- fields are our own ints and a bounded, quoted response snippet
+	res.applySummary(body)
+	log.Printf("FarmOps push: storms/scores DESERT %s (event %d) sent=%d by_id=%d by_name=%d created_event=%v status=%d matched=%d unmatched=%v",
+		eventDate, eventID, res.Sent, res.ByID, res.ByName, res.CreatedEvent, res.Status, res.Matched, res.Unmatched) // #nosec G706 -- our own ints and a parsed []string of names
 	return res, err
 }
 
@@ -322,12 +444,4 @@ func logFarmOpsPushStatus() {
 	} else {
 		log.Println("FarmOps push: LASTWAR_FARM_WRITE_KEY not set, push disabled")
 	}
-}
-
-func truncateForLog(s string, n int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) > n {
-		s = s[:n] + "…"
-	}
-	return fmt.Sprintf("%q", s)
 }
