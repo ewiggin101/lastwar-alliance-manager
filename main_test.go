@@ -479,3 +479,26 @@ func TestNormalizeName_KeepsGenuineDifferences(t *testing.T) {
 		}
 	}
 }
+
+// The DS handler merges rows from many screenshots of one event. The same
+// player appears on more than one page, and the vision extractor can spell a
+// name slightly differently between frames; both must collapse to one
+// participant carrying the highest damage seen.
+func TestMergeDSParticipant(t *testing.T) {
+	var all []DSOCRParticipant
+	mergeDSParticipant(&all, DSOCRRecord{MemberName: "Sporky1", AllianceTag: "PUC", Damage: 100})
+	mergeDSParticipant(&all, DSOCRRecord{MemberName: "sporky1", AllianceTag: "PUC", Damage: 250}) // case
+	mergeDSParticipant(&all, DSOCRRecord{MemberName: "Sporky1", AllianceTag: "PUC", Damage: 50})  // lower, keep 250
+	mergeDSParticipant(&all, DSOCRRecord{MemberName: "", Damage: 999})                            // empty name dropped
+	mergeDSParticipant(&all, DSOCRRecord{MemberName: "Miaaa", AllianceTag: "PUC", Damage: 7})
+
+	if len(all) != 2 {
+		t.Fatalf("expected 2 participants, got %d: %+v", len(all), all)
+	}
+	if all[0].NameSnapshot != "Sporky1" || all[0].Damage != 250 {
+		t.Errorf("first participant = %+v, want Sporky1 with damage 250", all[0])
+	}
+	if all[1].NameSnapshot != "Miaaa" || all[1].Damage != 7 {
+		t.Errorf("second participant = %+v, want Miaaa with damage 7", all[1])
+	}
+}

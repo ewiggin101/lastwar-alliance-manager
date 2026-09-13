@@ -12995,78 +12995,109 @@ func confirmDesertStorm(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/desert-storm/process-screenshots — OCR parse DS screenshots
+// mergeDSParticipant folds one parsed row into the running participant list.
+// Several screenshots cover one event (pages of the leaderboard, or a scroll
+// video's frames), so the same player turns up more than once; the highest
+// damage seen wins, and near-identical spellings are treated as one player.
+func mergeDSParticipant(all *[]DSOCRParticipant, rec DSOCRRecord) {
+	if rec.MemberName == "" {
+		return
+	}
+	p := DSOCRParticipant{
+		NameSnapshot: rec.MemberName,
+		AllianceTag:  rec.AllianceTag,
+		Damage:       rec.Damage,
+	}
+	for i, existing := range *all {
+		if strings.EqualFold(existing.NameSnapshot, p.NameSnapshot) ||
+			calculateSimilarity(existing.NameSnapshot, p.NameSnapshot) >= 75 {
+			if p.Damage > existing.Damage {
+				(*all)[i].Damage = p.Damage
+				(*all)[i].AllianceTag = p.AllianceTag
+			}
+			return
+		}
+	}
+	*all = append(*all, p)
+}
+
+// POST /api/desert-storm/process-screenshots
+//
+// Accepts either multipart images (parsed here with Tesseract) or a JSON body
+// of pre-parsed records. The JSON form exists for the Discord relay, which
+// transcribes screenshots with a vision model: on real phone captures the
+// Tesseract path degraded on 13 of 14 VS screenshots, and the DS parser shares
+// its assumptions. Everything after parsing — merging pages, ranking, matching
+// names to the roster, the duplicate-date check — is identical for both, so
+// that logic lives here once rather than being reimplemented by the caller.
 func processDesertStormScreenshots(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		http.Error(w, "Failed to parse form: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	files := r.MultipartForm.File["images[]"]
-	if len(files) == 0 {
-		files = r.MultipartForm.File["image"]
-	}
-	if len(files) == 0 {
-		http.Error(w, "No images provided", http.StatusBadRequest)
-		return
-	}
-	if len(files) > 40 {
-		http.Error(w, "Maximum 40 images allowed", http.StatusBadRequest)
-		return
-	}
-
 	var allParticipants []DSOCRParticipant
 	var eventDate string
 
-	for _, fh := range files {
-		file, err := fh.Open()
-		if err != nil {
-			continue
-		}
-		imageData, err := io.ReadAll(file)
-		file.Close()
-		if err != nil {
-			continue
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			http.Error(w, "Failed to parse form: "+err.Error(), http.StatusBadRequest)
+			return
 		}
 
-		records, date, err := extractDesertStormDataFromImage(imageData)
-		if err != nil {
-			log.Printf("DS OCR: %v", err)
-			continue
+		files := r.MultipartForm.File["images[]"]
+		if len(files) == 0 {
+			files = r.MultipartForm.File["image"]
 		}
-		if date != "" && eventDate == "" {
-			eventDate = date
+		if len(files) == 0 {
+			http.Error(w, "No images provided", http.StatusBadRequest)
+			return
+		}
+		if len(files) > 40 {
+			http.Error(w, "Maximum 40 images allowed", http.StatusBadRequest)
+			return
 		}
 
-		for _, rec := range records {
-			if rec.MemberName == "" {
+		for _, fh := range files {
+			file, err := fh.Open()
+			if err != nil {
 				continue
 			}
-			p := DSOCRParticipant{
-				NameSnapshot: rec.MemberName,
-				AllianceTag:  rec.AllianceTag,
-				Damage:       rec.Damage,
+			imageData, err := io.ReadAll(file)
+			file.Close()
+			if err != nil {
+				continue
 			}
-			merged := false
-			for i, existing := range allParticipants {
-				if strings.EqualFold(existing.NameSnapshot, p.NameSnapshot) ||
-					calculateSimilarity(existing.NameSnapshot, p.NameSnapshot) >= 75 {
-					if p.Damage > existing.Damage {
-						allParticipants[i].Damage = p.Damage
-						allParticipants[i].AllianceTag = p.AllianceTag
-					}
-					merged = true
-					break
-				}
+
+			records, date, err := extractDesertStormDataFromImage(imageData)
+			if err != nil {
+				log.Printf("DS OCR: %v", err)
+				continue
 			}
-			if !merged {
-				allParticipants = append(allParticipants, p)
+			if date != "" && eventDate == "" {
+				eventDate = date
+			}
+			for _, rec := range records {
+				mergeDSParticipant(&allParticipants, rec)
 			}
 		}
-	}
 
-	// Manual event_date override.
-	if manualDate := r.FormValue("event_date"); manualDate != "" {
-		eventDate = manualDate
+		// Manual event_date override.
+		if manualDate := r.FormValue("event_date"); manualDate != "" {
+			eventDate = manualDate
+		}
+	} else {
+		var req struct {
+			Records   []DSOCRRecord `json:"records"`
+			EventDate string        `json:"event_date"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(req.Records) == 0 {
+			http.Error(w, "No records provided", http.StatusBadRequest)
+			return
+		}
+		for _, rec := range req.Records {
+			mergeDSParticipant(&allParticipants, rec)
+		}
+		eventDate = req.EventDate
 	}
 
 	// Rank by damage descending (higher damage = lower rank number).
