@@ -12381,6 +12381,12 @@ func processVSPointsScreenshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mirror this day to FarmOps. Async: the relay is waiting on this
+	// response and a FarmOps hiccup must not delay or fail the save.
+	if successCount > 0 {
+		farmOpsPushDuelsAsync(weekDate, dayColumn)
+	}
+
 	response := map[string]interface{}{
 		"message":         fmt.Sprintf("Successfully updated VS points for %d members on %s", successCount, detectedDay),
 		"day":             detectedDay,
@@ -12985,6 +12991,9 @@ func confirmDesertStorm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Mirror the event to FarmOps; see farmops_push.go.
+	farmOpsPushStormScoresAsync(int(eventID))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -18219,6 +18228,7 @@ func main() {
 	// Mirror the FarmOps alliance export (roster, power/kill/THP history, weekly
 	// donations) into the local database on a timer. No-op without an API key.
 	go startFarmOpsSyncLoop()
+	logFarmOpsPushStatus()
 
 	router := mux.NewRouter()
 
@@ -18329,6 +18339,7 @@ func main() {
 	router.HandleFunc("/api/power-history/process-screenshot", authMiddleware(processPowerScreenshot)).Methods("POST")
 	router.HandleFunc("/api/merit-pool/refresh", authMiddleware(rankManagementMiddleware(refreshMeritTHP))).Methods("POST")
 	router.HandleFunc("/api/farmops/sync", authMiddleware(rankManagementMiddleware(handleFarmOpsSync))).Methods("POST")
+	router.HandleFunc("/api/farmops/push", authMiddleware(rankManagementMiddleware(handleFarmOpsPush))).Methods("POST")
 
 	// Marshal Guard routes (protected)
 	router.HandleFunc("/api/marshal-guard", authMiddleware(listMarshalGuardEvents)).Methods("GET")
