@@ -18317,7 +18317,9 @@ func main() {
 	// VS points routes (protected)
 	router.HandleFunc("/api/vs-points", authMiddleware(getVSPoints)).Methods("GET")
 	router.HandleFunc("/api/vs-points", authMiddleware(saveVSPoints)).Methods("POST")
-	router.HandleFunc("/api/vs-points/{week}", authMiddleware(deleteWeekVSPoints)).Methods("DELETE")
+	// Wiping a week is rank management, not data submission: an automation
+	// login must be able to post rows but never delete a week of them.
+	router.HandleFunc("/api/vs-points/{week}", authMiddleware(rankManagementMiddleware(deleteWeekVSPoints))).Methods("DELETE")
 	router.HandleFunc("/api/vs-points/process-screenshot", authMiddleware(processVSPointsScreenshot)).Methods("POST")
 	router.HandleFunc("/api/vs-points/patch", authMiddleware(r4r5Middleware(patchVSPoint))).Methods("PATCH")
 	router.HandleFunc("/api/vs-compliance", authMiddleware(getVSCompliance)).Methods("GET")
