@@ -191,6 +191,7 @@ function displayUsers(users) {
                         <h3>
                             ${escapeHtml(user.username)}
                             ${user.is_admin ? '<span class="admin-badge">Admin</span>' : ''}
+                            ${user.is_automation ? '<span class="admin-badge automation-badge">Automation</span>' : ''}
                         </h3>
                         ${memberInfo}
                     </div>
@@ -268,6 +269,7 @@ function editUser(userId) {
     document.getElementById('username').value = user.username;
     document.getElementById('member-id').value = user.member_id || '';
     document.getElementById('is-admin').checked = user.is_admin;
+    document.getElementById('is-automation').checked = !!user.is_automation;
     document.getElementById('password-group').style.display = 'none';
     document.getElementById('password').required = false;
     document.getElementById('user-modal').style.display = 'flex';
@@ -288,11 +290,13 @@ async function saveUser(event) {
     const password = document.getElementById('password').value;
     const memberIdValue = document.getElementById('member-id').value;
     const isAdmin = document.getElementById('is-admin').checked;
+    const isAutomation = document.getElementById('is-automation').checked;
     
     const userData = {
         username,
         member_id: memberIdValue ? parseInt(memberIdValue) : null,
-        is_admin: isAdmin
+        is_admin: isAdmin,
+        is_automation: isAutomation
     };
     
     // Add password for new users

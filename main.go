@@ -77,11 +77,12 @@ type MemberStats struct {
 }
 
 type User struct {
-	ID       int
-	Username string
-	Password string
-	MemberID *int
-	IsAdmin  bool
+	ID           int
+	Username     string
+	Password     string
+	MemberID     *int
+	IsAdmin      bool
+	IsAutomation bool
 }
 
 type Credentials struct {
@@ -200,6 +201,11 @@ type AdminUserRequest struct {
 	Password string `json:"password,omitempty"`
 	MemberID *int   `json:"member_id,omitempty"`
 	IsAdmin  bool   `json:"is_admin"`
+	// Automation logins (bots) can submit data — screenshots, records — but
+	// cannot manage members or reach admin features. They carry no member
+	// record, so they never appear in the roster or skew VS compliance, and
+	// they do not depend on any human's membership to keep working.
+	IsAutomation bool `json:"is_automation"`
 }
 
 type AdminUserResponse struct {
@@ -208,6 +214,7 @@ type AdminUserResponse struct {
 	MemberID     *int           `json:"member_id,omitempty"`
 	MemberName   *string        `json:"member_name,omitempty"`
 	IsAdmin      bool           `json:"is_admin"`
+	IsAutomation bool           `json:"is_automation"`
 	CreatedAt    string         `json:"created_at,omitempty"`
 	LastLogin    *string        `json:"last_login,omitempty"`
 	LoginCount   int            `json:"login_count"`
@@ -1116,6 +1123,7 @@ func initDB() error {
 		password TEXT NOT NULL,
 		member_id INTEGER,
 		is_admin BOOLEAN DEFAULT 0,
+		is_automation BOOLEAN DEFAULT 0,
 		active BOOLEAN NOT NULL DEFAULT 1,
 		must_change_password BOOLEAN NOT NULL DEFAULT 0,
 		FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE SET NULL
@@ -2115,6 +2123,12 @@ Ask in alliance chat for the train to be assigned. Thanks for keeping the train 
 		return err
 	}
 
+	// Automation logins (bots): a users flag, not a member record. See the
+	// AdminUserRequest comment for why.
+	if err := farmOpsEnsureColumn("users", "is_automation", `ALTER TABLE users ADD COLUMN is_automation BOOLEAN DEFAULT 0`); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -2168,11 +2182,19 @@ func rankManagementMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// r3PlusMiddleware allows R3, R4, R5, and admin (used for MG upload/confirm).
+// r3PlusMiddleware allows R3, R4, R5, admin, and automation logins (used for
+// screenshot upload/confirm). Automation is admitted here and nowhere else:
+// this is the data-submission gate, and a bot that posts screenshot data is
+// exactly what an automation login is for. It is deliberately not admitted by
+// rankManagementMiddleware or adminMiddleware.
 func r3PlusMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		session, _ := store.Get(r, "session")
 		if isAdmin, ok := session.Values["is_admin"].(bool); ok && isAdmin {
+			next(w, r)
+			return
+		}
+		if isAutomation, ok := session.Values["is_automation"].(bool); ok && isAutomation {
 			next(w, r)
 			return
 		}
@@ -2245,9 +2267,9 @@ func login(w http.ResponseWriter, r *http.Request) {
 
 	var user User
 	var memberID sql.NullInt64
-	var isAdmin sql.NullBool
+	var isAdmin, isAutomation sql.NullBool
 	var mustChangePwd bool
-	err := db.QueryRow("SELECT id, username, password, member_id, is_admin, COALESCE(must_change_password, 0) FROM users WHERE username = ?", creds.Username).Scan(&user.ID, &user.Username, &user.Password, &memberID, &isAdmin, &mustChangePwd)
+	err := db.QueryRow("SELECT id, username, password, member_id, is_admin, COALESCE(is_automation, 0), COALESCE(must_change_password, 0) FROM users WHERE username = ?", creds.Username).Scan(&user.ID, &user.Username, &user.Password, &memberID, &isAdmin, &isAutomation, &mustChangePwd)
 	if err != nil {
 		// Track failed login attempt
 		rateLimiter.recordFailure(clientIP)
@@ -2261,6 +2283,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 		user.MemberID = &mid
 	}
 	user.IsAdmin = isAdmin.Valid && isAdmin.Bool
+	user.IsAutomation = isAutomation.Valid && isAutomation.Bool
 
 	// Compare password
 	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(creds.Password))
@@ -2292,6 +2315,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 		session.Values["member_id"] = *user.MemberID
 	}
 	session.Values["is_admin"] = user.IsAdmin
+	session.Values["is_automation"] = user.IsAutomation
 	session.Values["must_change_password"] = mustChangePwd
 	session.Save(r, w)
 
@@ -2586,7 +2610,7 @@ func checkAuth(w http.ResponseWriter, r *http.Request) {
 // Admin: Get all users with login information
 func getAdminUsers(w http.ResponseWriter, r *http.Request) {
 	query := `
-		SELECT u.id, u.username, u.member_id, u.is_admin, 
+		SELECT u.id, u.username, u.member_id, u.is_admin, COALESCE(u.is_automation, 0), 
 			   m.name as member_name,
 			   (SELECT login_time FROM login_sessions WHERE user_id = u.id AND success = 1 ORDER BY login_time DESC LIMIT 1) as last_login,
 			   (SELECT COUNT(*) FROM login_sessions WHERE user_id = u.id AND success = 1) as login_count
@@ -2609,7 +2633,7 @@ func getAdminUsers(w http.ResponseWriter, r *http.Request) {
 		var memberName sql.NullString
 		var lastLogin sql.NullString
 
-		err := rows.Scan(&user.ID, &user.Username, &memberID, &user.IsAdmin,
+		err := rows.Scan(&user.ID, &user.Username, &memberID, &user.IsAdmin, &user.IsAutomation,
 			&memberName, &lastLogin, &user.LoginCount)
 		if err != nil {
 			continue
@@ -2708,8 +2732,8 @@ func createAdminUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Insert user
-	result, err := db.Exec("INSERT INTO users (username, password, member_id, is_admin) VALUES (?, ?, ?, ?)",
-		req.Username, string(hashedPassword), req.MemberID, req.IsAdmin)
+	result, err := db.Exec("INSERT INTO users (username, password, member_id, is_admin, is_automation) VALUES (?, ?, ?, ?, ?)",
+		req.Username, string(hashedPassword), req.MemberID, req.IsAdmin, req.IsAutomation)
 	if err != nil {
 		http.Error(w, "Failed to create user: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -2759,11 +2783,11 @@ func updateAdminUser(w http.ResponseWriter, r *http.Request) {
 
 	// Build update query
 	if req.Username != "" {
-		_, err = db.Exec("UPDATE users SET username = ?, member_id = ?, is_admin = ? WHERE id = ?",
-			req.Username, req.MemberID, req.IsAdmin, userID)
+		_, err = db.Exec("UPDATE users SET username = ?, member_id = ?, is_admin = ?, is_automation = ? WHERE id = ?",
+			req.Username, req.MemberID, req.IsAdmin, req.IsAutomation, userID)
 	} else {
-		_, err = db.Exec("UPDATE users SET member_id = ?, is_admin = ? WHERE id = ?",
-			req.MemberID, req.IsAdmin, userID)
+		_, err = db.Exec("UPDATE users SET member_id = ?, is_admin = ?, is_automation = ? WHERE id = ?",
+			req.MemberID, req.IsAdmin, req.IsAutomation, userID)
 	}
 
 	if err != nil {

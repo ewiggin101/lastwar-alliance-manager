@@ -9447,3 +9447,9 @@ html.theme-dark .ld-chart-card h4 { color: #f7fafc; }
 .manual-participant-row input[type="number"] { flex: 1; min-width: 0; }
 .manual-participant-row .mg-manual-remove,
 .manual-participant-row .zs-manual-remove { flex: 0 0 auto; }
+
+/* Automation logins: bots that submit data but hold no admin or rank powers.
+   Same shape as .admin-badge, muted colour so it does not read as elevated. */
+.automation-badge {
+    background: #4a5568;
+}
