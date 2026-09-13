@@ -16,6 +16,10 @@ services:
       SESSION_KEY: "${SESSION_KEY}"
       # Optional FarmOps API key. If unset, Merit THP refresh uses WARDAWGG.
       LASTWAR_FARM_API_KEY: "${LASTWAR_FARM_API_KEY}"
+      # Optional FarmOps WRITE-scoped key. Enables mirroring VS points and
+      # Desert Storm results out to FarmOps after each save (farmops_push.go).
+      # Kept separate from the read key: one credential per consumer.
+      LASTWAR_FARM_WRITE_KEY: "${LASTWAR_FARM_WRITE_KEY}"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
