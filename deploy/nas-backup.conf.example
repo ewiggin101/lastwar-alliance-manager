@@ -1,0 +1,7 @@
+# Absolute paths to back up (one per line). Copied to /etc/nas-backup.d/lwm.conf
+# on the Oracle box; nas-backup.sh (game-servers/shared) mirrors each one to the
+# Synology NAS as rsync-backups/oracle/lwm/<basename>/ every 2 hours.
+#
+# Only the rotating snapshots are mirrored, not the live data/ dir: the live DB
+# can be mid-write, and data/caddy holds TLS certs that Let's Encrypt reissues.
+/home/ubuntu/lastwar-alliance-manager/backups

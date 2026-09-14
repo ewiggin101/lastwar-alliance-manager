@@ -142,20 +142,39 @@ docker compose exec lastwar sh -c 'cp /data/alliance.db /data/alliance_backup_$(
 
 ### 7. Automated Backups (Docker)
 
-Add a cron job on the host to copy the database file out of the volume:
+`backup.sh` (repo root) snapshots the database with sqlite3's online `.backup`,
+which is safe against the running container, and prunes snapshots older than
+the retention you give it. It needs `sqlite3` on the **host** — without it the
+script falls back to `cp`, and because the database is not in WAL mode that
+can capture a torn copy mid-write.
+
+`deploy/systemd/` has a timer that runs it every 6 hours with 30-day retention:
 
 ```bash
-sudo tee /usr/local/bin/backup-lastwar.sh << 'EOF'
-#!/bin/bash
-BACKUP_DIR="/var/backups/lastwar"
-mkdir -p "$BACKUP_DIR"
-cp /opt/lastwar/data/alliance.db "$BACKUP_DIR/alliance_$(date +%Y%m%d_%H%M%S).db"
-find "$BACKUP_DIR" -name "alliance_*.db" -mtime +7 -delete
-EOF
-sudo chmod +x /usr/local/bin/backup-lastwar.sh
+sudo apt-get install -y sqlite3
+sudo cp deploy/systemd/lwm-backup.service deploy/systemd/lwm-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now lwm-backup.timer
+sudo systemctl start lwm-backup.service      # take one now and check it
+ls -la backups/
+```
 
-# Run daily at 02:00
-echo "0 2 * * * root /usr/local/bin/backup-lastwar.sh" | sudo tee /etc/cron.d/lastwar-backup
+The unit hardcodes the `/home/ubuntu/lastwar-alliance-manager` checkout path,
+which is where the Oracle deployment lives; edit both lines if yours differs.
+
+**Off-box copy.** On the Oracle box these snapshots also ride the existing
+2-hourly push to the Synology NAS (`nas-backup.sh` from `game-servers/shared`,
+documented in that repo's `docs/nas-backup.md`). Copy
+`deploy/nas-backup.conf.example` to `/etc/nas-backup.d/lwm.conf`; the next run
+picks it up with no restart. Only `backups/` is mirrored — not the live `data/`
+directory, and not `.env`, whose secrets live in Proton Pass.
+
+**Restore.** Stop the app, put the snapshot in place, start it:
+
+```bash
+docker compose stop lastwar
+sudo cp backups/alliance_YYYYMMDD_HHMMSS.db data/alliance.db
+docker compose start lastwar
 ```
 
 ### 8. Updating the Application (Docker)

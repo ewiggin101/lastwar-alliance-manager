@@ -1,0 +1,10 @@
+[Unit]
+Description=LastWar Alliance Manager SQLite backup
+
+[Service]
+Type=oneshot
+# backup.sh uses sqlite3's online .backup, so this is safe against the live
+# container. It falls back to cp if sqlite3 is missing -- the DB is not in WAL
+# mode, so that fallback can produce a torn copy: keep sqlite3 installed.
+Environment=DATABASE_PATH=/home/ubuntu/lastwar-alliance-manager/data/alliance.db
+ExecStart=/bin/bash /home/ubuntu/lastwar-alliance-manager/backup.sh /home/ubuntu/lastwar-alliance-manager/backups 30

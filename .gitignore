@@ -71,3 +71,4 @@ ocr_test/
 
 # Reference OCR sample screenshots are tracked on purpose
 !reference/ocr-samples/**
+backups/
