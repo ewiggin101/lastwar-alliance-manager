@@ -72,3 +72,8 @@ ocr_test/
 # Reference OCR sample screenshots are tracked on purpose
 !reference/ocr-samples/**
 backups/
+
+# Runtime state of a docker-compose deployment (bind mounts). Never commit.
+data/
+*.db
+*.db.*
