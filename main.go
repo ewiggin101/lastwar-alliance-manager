@@ -12661,18 +12661,16 @@ func normalizeStormType(s string) (string, error) {
 	return "", fmt.Errorf("unknown storm_type %q (want DESERT or CANYON)", s)
 }
 
-// stormTypeFilter turns an optional ?type= query into a WHERE clause on the
-// events table (aliased by prefix, e.g. "e."), empty when no type was asked for.
-func stormTypeFilter(r *http.Request, prefix string) (string, []any, error) {
+// stormTypeParam reads an optional ?type= query for the storm listings. It
+// returns "" when no type was asked for; the queries bind that twice into a
+// static "empty, or equal to storm_type" predicate, so no SQL is ever built
+// from the value (gosec G202).
+func stormTypeParam(r *http.Request) (string, error) {
 	raw := r.URL.Query().Get("type")
 	if raw == "" {
-		return "", nil, nil
+		return "", nil
 	}
-	t, err := normalizeStormType(raw)
-	if err != nil {
-		return "", nil, err
-	}
-	return "WHERE " + prefix + "storm_type = ?", []any{t}, nil
+	return normalizeStormType(raw)
 }
 
 type DesertStormEvent struct {
@@ -12811,7 +12809,7 @@ func matchDSParticipant(p *DSOCRParticipant, members []Member) {
 // GET /api/desert-storm — list events with summary
 func listDesertStormEvents(w http.ResponseWriter, r *http.Request) {
 	// ?type=DESERT|CANYON narrows to one storm; absent means every event.
-	typeFilter, args, err := stormTypeFilter(r, "e.")
+	stormType, err := stormTypeParam(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -12824,9 +12822,9 @@ func listDesertStormEvents(w http.ResponseWriter, r *http.Request) {
 			COALESCE((SELECT p2.damage FROM desert_storm_participants p2 WHERE p2.event_id = e.id ORDER BY p2.damage DESC LIMIT 1), 0) as top_damage
 		FROM desert_storm_events e
 		LEFT JOIN desert_storm_participants p ON p.event_id = e.id
-		`+typeFilter+`
+		WHERE (? = '' OR e.storm_type = ?)
 		GROUP BY e.id
-		ORDER BY e.event_date DESC`, args...)
+		ORDER BY e.event_date DESC`, stormType, stormType)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -12999,13 +12997,10 @@ func updateDesertStormParticipant(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/desert-storm/member-stats — per-member Desert Storm stats
 func getDesertStormMemberStats(w http.ResponseWriter, r *http.Request) {
-	typeFilter, args, err := stormTypeFilter(r, "e.")
+	stormType, err := stormTypeParam(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
-	}
-	if typeFilter != "" {
-		typeFilter = " AND " + strings.TrimPrefix(typeFilter, "WHERE ")
 	}
 	rows, err := db.Query(`
 		SELECT p.member_id, m.name, m.rank,
@@ -13016,9 +13011,9 @@ func getDesertStormMemberStats(w http.ResponseWriter, r *http.Request) {
 		FROM desert_storm_participants p
 		JOIN members m ON m.id = p.member_id
 		JOIN desert_storm_events e ON e.id = p.event_id
-		WHERE p.member_id IS NOT NULL`+typeFilter+`
+		WHERE p.member_id IS NOT NULL AND (? = '' OR e.storm_type = ?)
 		GROUP BY p.member_id
-		ORDER BY total_damage DESC`, args...)
+		ORDER BY total_damage DESC`, stormType, stormType)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
