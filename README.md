@@ -299,6 +299,8 @@ LastWar/
     ├── rankings.html        # Performance rankings
     ├── settings.html        # Configuration (R5/Admin only)
     ├── storm.html           # Storm assignments
+    ├── desert-storm.html    # Desert Storm results (events + member stats)
+    ├── canyon-storm.html    # Canyon Storm results — same page logic, storm_type=CANYON
     ├── vs.html              # VS points tracking
     ├── vs-compliance.html   # VS compliance report
     ├── upload.html          # Screenshot upload (OCR)

@@ -52,6 +52,7 @@
                 <a href="/storm.html" class="nav-link">🏜️ Storm</a>
                 <a href="/marshal-guard.html" class="nav-link" id="mg-nav-link">🛡️ Marshal Guard</a>
                 <a href="/desert-storm.html" class="nav-link" id="ds-nav-link">🏜️ Desert Storm</a>
+                <a href="/canyon-storm.html" class="nav-link" id="cs-nav-link">🏞️ Canyon Storm</a>
                 <a href="/zombie-siege.html" class="nav-link" id="zs-nav-link">🧟 Zombie Siege</a>
                 <a href="/vs.html" class="nav-link">⚔️ VS Points</a>
                 <a href="/vs-compliance.html" class="nav-link">✅ VS Compliance</a>

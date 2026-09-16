@@ -2071,6 +2071,26 @@ Ask in alliance chat for the train to be assigned. Thanks for keeping the train 
 		return err
 	}
 
+	// Canyon Storm results are the same shape as Desert Storm (a ranked list
+	// of members and points), so both live in these tables, told apart by
+	// storm_type. Existing rows predate the column and are all Desert Storm.
+	var stormTypeColumnExists bool
+	err = db.QueryRow(`
+		SELECT COUNT(*) > 0
+		FROM pragma_table_info('desert_storm_events')
+		WHERE name = 'storm_type'
+	`).Scan(&stormTypeColumnExists)
+	if err != nil {
+		return err
+	}
+	if !stormTypeColumnExists {
+		_, err = db.Exec(`ALTER TABLE desert_storm_events ADD COLUMN storm_type TEXT NOT NULL DEFAULT 'DESERT'`)
+		if err != nil {
+			return err
+		}
+		log.Println("Database migration: Added storm_type column to desert_storm_events table")
+	}
+
 	// Create zombie_siege_events table (waves-defended ranking)
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS zombie_siege_events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -12622,8 +12642,42 @@ func processPowerScreenshot(w http.ResponseWriter, r *http.Request) {
 // Desert Storm handlers
 // ============================================================
 
+// Storm types that share the desert_storm_* tables and the FarmOps
+// storms endpoints (whose stormType enum these values match exactly).
+const (
+	stormTypeDesert = "DESERT"
+	stormTypeCanyon = "CANYON"
+)
+
+// normalizeStormType maps a request's storm type onto the stored form.
+// Empty means Desert Storm so every pre-Canyon client keeps working.
+func normalizeStormType(s string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "", stormTypeDesert:
+		return stormTypeDesert, nil
+	case stormTypeCanyon:
+		return stormTypeCanyon, nil
+	}
+	return "", fmt.Errorf("unknown storm_type %q (want DESERT or CANYON)", s)
+}
+
+// stormTypeFilter turns an optional ?type= query into a WHERE clause on the
+// events table (aliased by prefix, e.g. "e."), empty when no type was asked for.
+func stormTypeFilter(r *http.Request, prefix string) (string, []any, error) {
+	raw := r.URL.Query().Get("type")
+	if raw == "" {
+		return "", nil, nil
+	}
+	t, err := normalizeStormType(raw)
+	if err != nil {
+		return "", nil, err
+	}
+	return "WHERE " + prefix + "storm_type = ?", []any{t}, nil
+}
+
 type DesertStormEvent struct {
 	ID                  int                      `json:"id"`
+	StormType           string                   `json:"storm_type"`
 	EventDate           string                   `json:"event_date"`
 	TotalAllianceDamage int64                    `json:"total_alliance_damage"`
 	Notes               string                   `json:"notes"`
@@ -12647,6 +12701,7 @@ type DesertStormParticipant struct {
 }
 
 type DesertStormOCRResult struct {
+	StormType       string             `json:"storm_type"`
 	EventDate       string             `json:"event_date"`
 	TotalDamage     int64              `json:"total_damage"`
 	Participants    []DSOCRParticipant `json:"participants"`
@@ -12663,6 +12718,7 @@ type DSOCRParticipant struct {
 }
 
 type DSConfirmRequest struct {
+	StormType        string             `json:"storm_type"`
 	EventDate        string             `json:"event_date"`
 	TotalDamage      int64              `json:"total_damage"`
 	Notes            string             `json:"notes"`
@@ -12754,16 +12810,23 @@ func matchDSParticipant(p *DSOCRParticipant, members []Member) {
 
 // GET /api/desert-storm — list events with summary
 func listDesertStormEvents(w http.ResponseWriter, r *http.Request) {
+	// ?type=DESERT|CANYON narrows to one storm; absent means every event.
+	typeFilter, args, err := stormTypeFilter(r, "e.")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	rows, err := db.Query(`
-		SELECT e.id, e.event_date, e.total_alliance_damage, COALESCE(e.notes, ''),
+		SELECT e.id, e.storm_type, e.event_date, e.total_alliance_damage, COALESCE(e.notes, ''),
 			e.created_at, e.created_by_id,
 			COUNT(p.id) as participant_count,
 			COALESCE((SELECT p2.name_snapshot FROM desert_storm_participants p2 WHERE p2.event_id = e.id ORDER BY p2.damage DESC LIMIT 1), '') as top_dealer,
 			COALESCE((SELECT p2.damage FROM desert_storm_participants p2 WHERE p2.event_id = e.id ORDER BY p2.damage DESC LIMIT 1), 0) as top_damage
 		FROM desert_storm_events e
 		LEFT JOIN desert_storm_participants p ON p.event_id = e.id
+		`+typeFilter+`
 		GROUP BY e.id
-		ORDER BY e.event_date DESC`)
+		ORDER BY e.event_date DESC`, args...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -12774,7 +12837,7 @@ func listDesertStormEvents(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var ev DesertStormEvent
 		var createdByID sql.NullInt64
-		if err := rows.Scan(&ev.ID, &ev.EventDate, &ev.TotalAllianceDamage, &ev.Notes,
+		if err := rows.Scan(&ev.ID, &ev.StormType, &ev.EventDate, &ev.TotalAllianceDamage, &ev.Notes,
 			&ev.CreatedAt, &createdByID, &ev.ParticipantCount, &ev.TopDamageDealer, &ev.TopDamage); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -12795,9 +12858,9 @@ func getDesertStormEvent(w http.ResponseWriter, r *http.Request) {
 
 	var ev DesertStormEvent
 	var createdByID sql.NullInt64
-	err := db.QueryRow(`SELECT id, event_date, total_alliance_damage, COALESCE(notes, ''), created_at, created_by_id
+	err := db.QueryRow(`SELECT id, storm_type, event_date, total_alliance_damage, COALESCE(notes, ''), created_at, created_by_id
 		FROM desert_storm_events WHERE id = ?`, id).Scan(
-		&ev.ID, &ev.EventDate, &ev.TotalAllianceDamage, &ev.Notes, &ev.CreatedAt, &createdByID)
+		&ev.ID, &ev.StormType, &ev.EventDate, &ev.TotalAllianceDamage, &ev.Notes, &ev.CreatedAt, &createdByID)
 	if err != nil {
 		http.Error(w, "Event not found", http.StatusNotFound)
 		return
@@ -12843,6 +12906,7 @@ func getDesertStormEvent(w http.ResponseWriter, r *http.Request) {
 // POST /api/desert-storm — create event manually (no OCR)
 func createDesertStormEvent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		StormType           string `json:"storm_type"`
 		EventDate           string `json:"event_date"`
 		TotalAllianceDamage int64  `json:"total_alliance_damage"`
 		Notes               string `json:"notes"`
@@ -12855,12 +12919,17 @@ func createDesertStormEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "event_date is required", http.StatusBadRequest)
 		return
 	}
+	stormType, err := normalizeStormType(req.StormType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	session, _ := store.Get(r, "session")
 	userID, _ := session.Values["user_id"].(int)
 
-	result, err := db.Exec(`INSERT INTO desert_storm_events (event_date, total_alliance_damage, notes, created_by_id)
-		VALUES (?, ?, ?, ?)`, req.EventDate, req.TotalAllianceDamage, req.Notes, userID)
+	result, err := db.Exec(`INSERT INTO desert_storm_events (storm_type, event_date, total_alliance_damage, notes, created_by_id)
+		VALUES (?, ?, ?, ?, ?)`, stormType, req.EventDate, req.TotalAllianceDamage, req.Notes, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -12930,6 +12999,14 @@ func updateDesertStormParticipant(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/desert-storm/member-stats — per-member Desert Storm stats
 func getDesertStormMemberStats(w http.ResponseWriter, r *http.Request) {
+	typeFilter, args, err := stormTypeFilter(r, "e.")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if typeFilter != "" {
+		typeFilter = " AND " + strings.TrimPrefix(typeFilter, "WHERE ")
+	}
 	rows, err := db.Query(`
 		SELECT p.member_id, m.name, m.rank,
 			COUNT(DISTINCT p.event_id) as event_count,
@@ -12938,9 +13015,10 @@ func getDesertStormMemberStats(w http.ResponseWriter, r *http.Request) {
 			COALESCE(MAX(p.damage), 0) as best_damage
 		FROM desert_storm_participants p
 		JOIN members m ON m.id = p.member_id
-		WHERE p.member_id IS NOT NULL
+		JOIN desert_storm_events e ON e.id = p.event_id
+		WHERE p.member_id IS NOT NULL`+typeFilter+`
 		GROUP BY p.member_id
-		ORDER BY total_damage DESC`)
+		ORDER BY total_damage DESC`, args...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -12972,6 +13050,11 @@ func confirmDesertStorm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "event_date is required", http.StatusBadRequest)
 		return
 	}
+	stormType, err := normalizeStormType(req.StormType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	session, _ := store.Get(r, "session")
 	userID, _ := session.Values["user_id"].(int)
@@ -12991,8 +13074,8 @@ func confirmDesertStorm(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := tx.Exec(`INSERT INTO desert_storm_events (event_date, total_alliance_damage, notes, created_by_id) VALUES (?, ?, ?, ?)`,
-		req.EventDate, req.TotalDamage, req.Notes, userID)
+	result, err := tx.Exec(`INSERT INTO desert_storm_events (storm_type, event_date, total_alliance_damage, notes, created_by_id) VALUES (?, ?, ?, ?, ?)`,
+		stormType, req.EventDate, req.TotalDamage, req.Notes, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -13065,7 +13148,7 @@ func mergeDSParticipant(all *[]DSOCRParticipant, rec DSOCRRecord) {
 // that logic lives here once rather than being reimplemented by the caller.
 func processDesertStormScreenshots(w http.ResponseWriter, r *http.Request) {
 	var allParticipants []DSOCRParticipant
-	var eventDate string
+	var eventDate, requestedType string
 
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
@@ -13114,8 +13197,10 @@ func processDesertStormScreenshots(w http.ResponseWriter, r *http.Request) {
 		if manualDate := r.FormValue("event_date"); manualDate != "" {
 			eventDate = manualDate
 		}
+		requestedType = r.FormValue("storm_type")
 	} else {
 		var req struct {
+			StormType string        `json:"storm_type"`
 			Records   []DSOCRRecord `json:"records"`
 			EventDate string        `json:"event_date"`
 		}
@@ -13131,6 +13216,12 @@ func processDesertStormScreenshots(w http.ResponseWriter, r *http.Request) {
 			mergeDSParticipant(&allParticipants, rec)
 		}
 		eventDate = req.EventDate
+		requestedType = req.StormType
+	}
+	stormType, err := normalizeStormType(requestedType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// Rank by damage descending (higher damage = lower rank number).
@@ -13154,11 +13245,12 @@ func processDesertStormScreenshots(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check for existing event on same date.
+	// Check for an existing event of this storm on the same date; Canyon and
+	// Desert on one day are different events.
 	var existingEventID *int
 	if eventDate != "" {
 		var eid int
-		err := db.QueryRow(`SELECT id FROM desert_storm_events WHERE event_date = ?`, eventDate).Scan(&eid)
+		err := db.QueryRow(`SELECT id FROM desert_storm_events WHERE storm_type = ? AND event_date = ?`, stormType, eventDate).Scan(&eid)
 		if err == nil {
 			existingEventID = &eid
 		}
@@ -13170,6 +13262,7 @@ func processDesertStormScreenshots(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(DesertStormOCRResult{
+		StormType:       stormType,
 		EventDate:       eventDate,
 		TotalDamage:     totalDamage,
 		Participants:    allParticipants,

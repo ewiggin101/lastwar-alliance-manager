@@ -1,4 +1,7 @@
-// Desert Storm page logic
+// Desert Storm page logic — also drives canyon-storm.html, which sets
+// window.STORM_TYPE before loading this file. Both storms share LWM's
+// desert-storm API; the type is a filter on reads and a field on writes.
+const STORM_TYPE = window.STORM_TYPE || 'DESERT';
 let canUpload = false; // R3, R4, R5, admin — can upload screenshots & import events
 let isOfficer = false; // R4, R5, admin — can edit/delete events
 let isAdmin = false;
@@ -77,7 +80,7 @@ function initTabs() {
 // ---- Event list ----
 async function loadEvents() {
     try {
-        const res = await fetch('/api/desert-storm');
+        const res = await fetch('/api/desert-storm?type=' + STORM_TYPE);
         const events = await res.json();
         renderEventList(events);
     } catch (e) {
@@ -163,7 +166,7 @@ async function deleteEvent(id) {
 // ---- Member stats ----
 async function loadMemberStats() {
     try {
-        const res = await fetch('/api/desert-storm/member-stats');
+        const res = await fetch('/api/desert-storm/member-stats?type=' + STORM_TYPE);
         const stats = await res.json();
         renderMemberStats(stats);
     } catch {
@@ -293,6 +296,7 @@ async function processScreenshots() {
     try {
         const formData = new FormData();
         selectedFiles.forEach(f => formData.append('images[]', f));
+        formData.append('storm_type', STORM_TYPE);
 
         const res = await fetch('/api/desert-storm/process-screenshots', { method: 'POST', body: formData });
         if (!res.ok) { showToast('OCR processing failed', 'error'); return; }
@@ -448,6 +452,7 @@ async function importEvent() {
     const totalDamage = participants.reduce((s, p) => s + (p.damage || 0), 0);
 
     const body = {
+        storm_type: STORM_TYPE,
         event_date: ocrResult.event_date,
         total_damage: totalDamage,
         notes: ocrResult.notes || '',
@@ -493,6 +498,7 @@ function initManualForm() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    storm_type: STORM_TYPE,
                     event_date: date,
                     total_alliance_damage: parseInt(document.getElementById('ds-total-damage').value) || 0,
                     notes: document.getElementById('ds-notes').value,

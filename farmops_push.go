@@ -263,11 +263,13 @@ func farmOpsPushDuels(ctx context.Context, weekDate, day string) (*farmOpsPushRe
 	return res, err
 }
 
-// farmOpsPushStormScores sends one Desert Storm event's results.
+// farmOpsPushStormScores sends one storm event's results. Desert and Canyon
+// Storm share the table and the FarmOps endpoints; storm_type is the FarmOps
+// stormType verbatim.
 func farmOpsPushStormScores(ctx context.Context, eventID int) (*farmOpsPushResult, error) {
-	var eventDate string
-	if err := db.QueryRow(`SELECT event_date FROM desert_storm_events WHERE id = ?`, eventID).Scan(&eventDate); err != nil {
-		return nil, fmt.Errorf("desert storm event %d: %w", eventID, err)
+	var eventDate, stormType string
+	if err := db.QueryRow(`SELECT event_date, storm_type FROM desert_storm_events WHERE id = ?`, eventID).Scan(&eventDate, &stormType); err != nil {
+		return nil, fmt.Errorf("storm event %d: %w", eventID, err)
 	}
 
 	rows, err := db.Query(`
@@ -306,7 +308,7 @@ func farmOpsPushStormScores(ctx context.Context, eventID int) (*farmOpsPushResul
 		return nil, err
 	}
 	if len(entries) == 0 {
-		return nil, fmt.Errorf("desert storm event %d has no participants", eventID)
+		return nil, fmt.Errorf("storm event %d has no participants", eventID)
 	}
 
 	res.Sent = len(entries)
@@ -317,7 +319,7 @@ func farmOpsPushStormScores(ctx context.Context, eventID int) (*farmOpsPushResul
 	// If not, create it from the participants: everyone with a score played,
 	// so STARTER is accurate; the team is unknown to LWM, so all go to A and
 	// the same default is passed to scores for consistency.
-	exists, err := farmOpsStormExists(ctx, "DESERT", eventDate)
+	exists, err := farmOpsStormExists(ctx, stormType, eventDate)
 	if err != nil {
 		return res, fmt.Errorf("checking for existing storm event: %w", err)
 	}
@@ -333,7 +335,7 @@ func farmOpsPushStormScores(ctx context.Context, eventID int) (*farmOpsPushResul
 			roster = append(roster, assignment{MemberID: e.MemberID, Name: e.Name, Team: "A", Role: "STARTER"})
 		}
 		status, body, err := farmOpsPost(ctx, farmOpsStormAssignmentsURL, map[string]any{
-			"stormType": "DESERT",
+			"stormType": stormType,
 			"eventDate": eventDate,
 			"entries":   roster,
 		})
@@ -343,19 +345,19 @@ func farmOpsPushStormScores(ctx context.Context, eventID int) (*farmOpsPushResul
 			return res, fmt.Errorf("creating storm event: %w", err)
 		}
 		res.CreatedEvent = true
-		log.Printf("FarmOps push: created DESERT %s roster from %d participant(s)", eventDate, len(roster)) // #nosec G706 -- validated date and an int
+		log.Printf("FarmOps push: created %s %s roster from %d participant(s)", stormType, eventDate, len(roster)) // #nosec G706 -- validated type and date, and an int
 	}
 
 	var body string
 	res.Status, body, err = farmOpsPost(ctx, farmOpsStormScoresURL, map[string]any{
-		"stormType":   "DESERT",
+		"stormType":   stormType,
 		"eventDate":   eventDate,
 		"defaultTeam": "A",
 		"entries":     entries,
 	})
 	res.applySummary(body)
-	log.Printf("FarmOps push: storms/scores DESERT %s (event %d) sent=%d by_id=%d by_name=%d created_event=%v status=%d matched=%d unmatched=%v",
-		eventDate, eventID, res.Sent, res.ByID, res.ByName, res.CreatedEvent, res.Status, res.Matched, res.Unmatched) // #nosec G706 -- our own ints and a parsed []string of names
+	log.Printf("FarmOps push: storms/scores %s %s (event %d) sent=%d by_id=%d by_name=%d created_event=%v status=%d matched=%d unmatched=%v",
+		stormType, eventDate, eventID, res.Sent, res.ByID, res.ByName, res.CreatedEvent, res.Status, res.Matched, res.Unmatched) // #nosec G706 -- our own ints and a parsed []string of names
 	return res, err
 }
 
@@ -440,7 +442,7 @@ func handleFarmOpsPush(w http.ResponseWriter, r *http.Request) {
 
 func logFarmOpsPushStatus() {
 	if farmOpsPushEnabled() {
-		log.Println("FarmOps push: enabled (VS points and Desert Storm results are mirrored after each save)")
+		log.Println("FarmOps push: enabled (VS points and Desert/Canyon Storm results are mirrored after each save)")
 	} else {
 		log.Println("FarmOps push: LASTWAR_FARM_WRITE_KEY not set, push disabled")
 	}

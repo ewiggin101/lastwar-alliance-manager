@@ -55,3 +55,22 @@ func TestFarmOpsPushDisabledWithoutKey(t *testing.T) {
 		t.Error("push must be enabled when LASTWAR_FARM_WRITE_KEY is set")
 	}
 }
+
+// storm_type is sent to FarmOps verbatim as its stormType enum, so only the
+// two values FarmOps knows may ever be stored. Empty stays Desert Storm: every
+// client written before Canyon Storm omits the field.
+func TestNormalizeStormType(t *testing.T) {
+	for in, want := range map[string]string{
+		"": "DESERT", "DESERT": "DESERT", "desert": "DESERT", " canyon ": "CANYON", "CANYON": "CANYON",
+	} {
+		got, err := normalizeStormType(in)
+		if err != nil || got != want {
+			t.Errorf("normalizeStormType(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"ZOMBIE", "desert storm", "A"} {
+		if _, err := normalizeStormType(bad); err == nil {
+			t.Errorf("normalizeStormType(%q) should fail", bad)
+		}
+	}
+}
