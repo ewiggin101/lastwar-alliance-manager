@@ -74,3 +74,31 @@ func TestNormalizeStormType(t *testing.T) {
 		}
 	}
 }
+
+// A roster row's team is the explicit one, else the faction's; the role
+// defaults to STARTER. Anything else is a bad request, not a silent A.
+func TestStormRosterNormalizers(t *testing.T) {
+	if got, ok := normalizeStormTeam(" b "); !ok || got != "B" {
+		t.Errorf("normalizeStormTeam(b) = %q, %v", got, ok)
+	}
+	if _, ok := normalizeStormTeam("C"); ok {
+		t.Error("team C must be rejected")
+	}
+	for in, want := range map[string]string{"": "STARTER", "starter": "STARTER", "sub": "SUBSTITUTE", "SUBSTITUTE": "SUBSTITUTE"} {
+		if got, ok := normalizeStormRole(in); !ok || got != want {
+			t.Errorf("normalizeStormRole(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	if _, ok := normalizeStormRole("bench"); ok {
+		t.Error("role bench must be rejected")
+	}
+	if stormPreferenceTeams["dawnbreakers"] == stormPreferenceTeams["rulebringers"] {
+		t.Error("the two factions must map to different teams")
+	}
+	if _, err := stormRosterDate("2026-9-18"); err == nil {
+		t.Error("non-ISO date must be rejected")
+	}
+	if d, err := stormRosterDate(" 2026-09-18 "); err != nil || d != "2026-09-18" {
+		t.Errorf("stormRosterDate = %q, %v", d, err)
+	}
+}

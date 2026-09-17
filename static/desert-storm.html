@@ -18,6 +18,7 @@
             <div class="tab-buttons">
                 <button class="tab-btn active" data-tab="events">🗓️ Events</button>
                 <button class="tab-btn" data-tab="stats">📊 Member Stats</button>
+                <button class="tab-btn" data-tab="roster">👥 Rosters</button>
             </div>
 
             <!-- Events Tab -->
@@ -29,6 +30,22 @@
                     </div>
                     <div id="event-list" class="rk-table-wrapper">
                         <p class="loading">⏳ Loading events...</p>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Rosters Tab: sign-ups per storm, one team each, mirrored to FarmOps assignments -->
+            <div id="tab-roster" class="tab-content">
+                <section class="form-section">
+                    <div class="mg-toolbar">
+                        <h3>👥 Rosters</h3>
+                    </div>
+                    <p class="text-muted" style="margin-top:0;font-size:0.9em;">
+                        Who signed up and which task force they are on, from the Participants screen (posted via ScoutBot).
+                        Fixing a team here re-sends the roster to FarmOps.
+                    </p>
+                    <div id="roster-list" class="rk-table-wrapper">
+                        <p class="loading">⏳ Loading rosters...</p>
                     </div>
                 </section>
             </div>

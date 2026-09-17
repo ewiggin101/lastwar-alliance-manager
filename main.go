@@ -2149,6 +2149,11 @@ Ask in alliance chat for the train to be assigned. Thanks for keeping the train 
 		return err
 	}
 
+	// Storm sign-up rosters (team per member), mirrored to FarmOps assignments.
+	if err := initStormRosterSchema(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -18472,6 +18477,12 @@ func main() {
 	router.HandleFunc("/api/desert-storm", authMiddleware(listDesertStormEvents)).Methods("GET")
 	router.HandleFunc("/api/desert-storm", authMiddleware(r3PlusMiddleware(createDesertStormEvent))).Methods("POST")
 	router.HandleFunc("/api/desert-storm/process-screenshots", authMiddleware(r3PlusMiddleware(processDesertStormScreenshots))).Methods("POST")
+	// Rosters come before the results; see storm_roster.go. Registered before
+	// the {id} routes so "roster" is never read as an event id.
+	router.HandleFunc("/api/desert-storm/roster", authMiddleware(listStormRoster)).Methods("GET")
+	router.HandleFunc("/api/desert-storm/roster", authMiddleware(r3PlusMiddleware(saveStormRoster))).Methods("POST")
+	router.HandleFunc("/api/desert-storm/roster/{id:[0-9]+}", authMiddleware(r3PlusMiddleware(updateStormRosterEntry))).Methods("PUT")
+	router.HandleFunc("/api/desert-storm/roster/{id:[0-9]+}", authMiddleware(r3PlusMiddleware(deleteStormRosterEntry))).Methods("DELETE")
 	router.HandleFunc("/api/desert-storm/confirm", authMiddleware(r3PlusMiddleware(confirmDesertStorm))).Methods("POST")
 	router.HandleFunc("/api/desert-storm/member-stats", authMiddleware(getDesertStormMemberStats)).Methods("GET")
 	router.HandleFunc("/api/desert-storm/{id}", authMiddleware(getDesertStormEvent)).Methods("GET")

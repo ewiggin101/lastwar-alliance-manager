@@ -163,6 +163,73 @@ async function deleteEvent(id) {
     } catch { showToast('Failed to delete event', 'error'); }
 }
 
+// ---- Rosters ----
+async function loadRosters() {
+    try {
+        const res = await fetch('/api/desert-storm/roster?type=' + STORM_TYPE);
+        renderRosters(await res.json());
+    } catch {
+        document.getElementById('roster-list').innerHTML = '<p class="empty">⚠️ Failed to load rosters.</p>';
+    }
+}
+
+function renderRosters(entries) {
+    const el = document.getElementById('roster-list');
+    if (!entries || entries.length === 0) {
+        el.innerHTML = '<p class="empty">👥 No rosters yet — post the Participants screen in the storm channel.</p>';
+        return;
+    }
+    // One table per storm date, newest first (the API already orders that way).
+    const byDate = new Map();
+    for (const e of entries) {
+        if (!byDate.has(e.event_date)) byDate.set(e.event_date, []);
+        byDate.get(e.event_date).push(e);
+    }
+    let html = '';
+    for (const [date, rows] of byDate) {
+        const a = rows.filter(r => r.team === 'A').length;
+        const b = rows.length - a;
+        html += `<h4 style="margin:1rem 0 .4rem;">${escapeHtml(date)} <span class="text-muted" style="font-weight:normal;font-size:.85em;">— ${rows.length} signed up · A ${a} / B ${b}</span></h4>`;
+        html += `<table class="rk-table"><thead><tr><th>Member</th><th>Preference</th><th>Team</th><th>Role</th>${isOfficer ? '<th></th>' : ''}</tr></thead><tbody>`;
+        for (const r of rows) {
+            const name = r.member_name || r.name_snapshot;
+            const unmatched = r.member_id == null ? ' <span title="Not matched to a member">⚠️</span>' : '';
+            const sel = (field, opts) => isOfficer
+                ? `<select class="form-control roster-edit" data-id="${r.id}" data-field="${field}">` +
+                  opts.map(o => `<option value="${o}"${r[field] === o ? ' selected' : ''}>${o}</option>`).join('') + '</select>'
+                : escapeHtml(r[field]);
+            html += `<tr>
+                <td>${escapeHtml(name)}${unmatched}</td>
+                <td>${escapeHtml(r.preference || '')}</td>
+                <td>${sel('team', ['A', 'B'])}</td>
+                <td>${sel('role', ['STARTER', 'SUBSTITUTE'])}</td>
+                ${isOfficer ? `<td><button class="btn btn-secondary roster-delete" data-id="${r.id}" title="Remove from roster">🗑️</button></td>` : ''}
+            </tr>`;
+        }
+        html += '</tbody></table>';
+    }
+    el.innerHTML = html;
+
+    el.querySelectorAll('.roster-edit').forEach(s => s.addEventListener('change', async () => {
+        const row = s.closest('tr');
+        const body = {
+            team: row.querySelector('[data-field="team"]').value,
+            role: row.querySelector('[data-field="role"]').value,
+        };
+        const res = await fetch('/api/desert-storm/roster/' + s.dataset.id, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        showToast(res.ok ? 'Roster updated' : 'Update failed', res.ok ? 'success' : 'error');
+        if (res.ok) loadRosters();
+    }));
+    el.querySelectorAll('.roster-delete').forEach(btn => btn.addEventListener('click', async () => {
+        if (!confirm('Remove this member from the roster?')) return;
+        const res = await fetch('/api/desert-storm/roster/' + btn.dataset.id, { method: 'DELETE' });
+        showToast(res.ok ? 'Removed' : 'Delete failed', res.ok ? 'success' : 'error');
+        if (res.ok) loadRosters();
+    }));
+}
+
 // ---- Member stats ----
 async function loadMemberStats() {
     try {
@@ -583,5 +650,5 @@ document.addEventListener('DOMContentLoaded', async () => {
     initManualForm();
     initSearch();
 
-    await Promise.all([loadEvents(), loadMemberStats(), loadDSMembers()]);
+    await Promise.all([loadEvents(), loadMemberStats(), loadRosters(), loadDSMembers()]);
 });

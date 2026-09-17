@@ -324,6 +324,19 @@ func farmOpsPushStormScores(ctx context.Context, eventID int) (*farmOpsPushResul
 		return res, fmt.Errorf("checking for existing storm event: %w", err)
 	}
 	if !exists {
+		// A roster saved here but never mirrored (FarmOps was down, or the
+		// push arrived before the key existed) still beats an invented one.
+		var rostered int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM storm_rosters WHERE storm_type = ? AND event_date = ?`, stormType, eventDate).Scan(&rostered)
+		if rostered > 0 {
+			if _, err := farmOpsPushStormRoster(ctx, stormType, eventDate); err != nil {
+				return res, fmt.Errorf("creating storm event from roster: %w", err)
+			}
+			res.CreatedEvent = true
+			exists = true
+		}
+	}
+	if !exists {
 		type assignment struct {
 			MemberID string `json:"memberId,omitempty"`
 			Name     string `json:"name,omitempty"`
@@ -394,6 +407,7 @@ func farmOpsPushStormScoresAsync(eventID int) {
 //
 //	{"kind":"vs","week_date":"2026-09-07","day":"monday"}
 //	{"kind":"storm","event_id":12}
+//	{"kind":"roster","storm_type":"CANYON","event_date":"2026-09-18"}
 //
 // Exists so data ingested before the push was wired (or after a FarmOps
 // outage) can be mirrored without re-posting screenshots. Gated to rank
@@ -404,10 +418,12 @@ func handleFarmOpsPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Kind     string `json:"kind"`
-		WeekDate string `json:"week_date"`
-		Day      string `json:"day"`
-		EventID  int    `json:"event_id"`
+		Kind      string `json:"kind"`
+		WeekDate  string `json:"week_date"`
+		Day       string `json:"day"`
+		EventID   int    `json:"event_id"`
+		StormType string `json:"storm_type"`
+		EventDate string `json:"event_date"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -424,8 +440,13 @@ func handleFarmOpsPush(w http.ResponseWriter, r *http.Request) {
 		res, err = farmOpsPushDuels(ctx, req.WeekDate, req.Day)
 	case "storm":
 		res, err = farmOpsPushStormScores(ctx, req.EventID)
+	case "roster":
+		var stormType string
+		if stormType, err = normalizeStormType(req.StormType); err == nil {
+			res, err = farmOpsPushStormRoster(ctx, stormType, req.EventDate)
+		}
 	default:
-		http.Error(w, `kind must be "vs" or "storm"`, http.StatusBadRequest)
+		http.Error(w, `kind must be "vs", "storm" or "roster"`, http.StatusBadRequest)
 		return
 	}
 	if err != nil {

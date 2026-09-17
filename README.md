@@ -301,6 +301,7 @@ LastWar/
     ├── storm.html           # Storm assignments
     ├── desert-storm.html    # Desert Storm results (events + member stats)
     ├── canyon-storm.html    # Canyon Storm results — same page logic, storm_type=CANYON
+    │                        # (both storm pages also carry a Rosters tab: storm_roster.go)
     ├── vs.html              # VS points tracking
     ├── vs-compliance.html   # VS compliance report
     ├── upload.html          # Screenshot upload (OCR)
